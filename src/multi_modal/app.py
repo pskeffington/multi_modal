@@ -1,0 +1,526 @@
+"""GTK4 desktop interface for local task routing and manual Codex review."""
+
+from __future__ import annotations
+
+import fcntl
+import sys
+import threading
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, Gio, GLib, Gtk
+
+from .client import DEFAULT_URL, GLM, QWEN, LocalClient, LocalModelError
+from .git_workspace import GitWorkspaceError, apply_patch as apply_git_patch, extract_unified_diff, read_context, repository_root, validate_patch
+from .store import TaskStore, data_dir
+from .worker import TaskWorker
+
+
+class RouterWindow(Gtk.ApplicationWindow):
+    def __init__(self, app: Gtk.Application, store: TaskStore, worker: TaskWorker):
+        super().__init__(application=app, title="Multi Modal — Local Task Router")
+        self.set_default_size(1160, 800)
+        self.store, self.worker = store, worker
+        self.selected_id: str | None = None
+        self._refreshing = False
+        self.rows: dict[str, Gtk.ListBoxRow] = {}
+        self.default_git_repo = ""
+        self.default_git_context = ""
+        self.default_git_context_paths = ""
+        self._patch_task_id = ""
+        self._patch_output = ""
+        self.patch_value = ""
+        self.patch_validation: tuple[str, str, str] | None = None
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        root.set_margin_top(12); root.set_margin_bottom(12)
+        root.set_margin_start(14); root.set_margin_end(14)
+        self.set_child(root)
+
+        header = Gtk.Box(spacing=10)
+        title = Gtk.Label(label="Local model task router", xalign=0)
+        title.add_css_class("title-1")
+        header.append(title)
+        self.health = Gtk.Label(label="Checking local router…", xalign=1)
+        self.health.set_hexpand(True)
+        header.append(self.health)
+        root.append(header)
+
+        root.append(Gtk.Label(label=f"Loopback only: {DEFAULT_URL} · One inference at a time · Codex review is manual", xalign=0))
+
+        compose = Gtk.Frame(label="New task")
+        compose_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        compose_box.set_margin_top(8); compose_box.set_margin_bottom(8)
+        compose_box.set_margin_start(8); compose_box.set_margin_end(8)
+        compose.set_child(compose_box)
+        self.prompt = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        self.prompt.set_size_request(-1, 90)
+        self.prompt.get_buffer().set_text("")
+        prompt_scroll = Gtk.ScrolledWindow(min_content_height=88)
+        prompt_scroll.set_child(self.prompt)
+        compose_box.append(prompt_scroll)
+        git_setup = Gtk.Box(spacing=8)
+        self.choose_repo_btn = Gtk.Button(label="Choose Git checkout")
+        self.choose_repo_btn.connect("clicked", self._choose_repo)
+        git_setup.append(self.choose_repo_btn)
+        self.clear_repo_btn = Gtk.Button(label="Clear checkout")
+        self.clear_repo_btn.connect("clicked", self._clear_repo)
+        git_setup.append(self.clear_repo_btn)
+        self.repo_summary = Gtk.Label(label="No repository attached", xalign=0, ellipsize=3)
+        self.repo_summary.set_hexpand(True)
+        git_setup.append(self.repo_summary)
+        compose_box.append(git_setup)
+        context_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        context_row.append(Gtk.Label(label="Optional checkout-relative UTF-8 files, one path per line:", xalign=0))
+        context_input_row = Gtk.Box(spacing=8)
+        self.context_paths = Gtk.TextView(wrap_mode=Gtk.WrapMode.NONE)
+        self.context_paths.set_size_request(-1, 54)
+        self.context_paths.get_buffer().connect("changed", self._context_paths_changed)
+        context_paths_scroll = Gtk.ScrolledWindow(min_content_height=50, max_content_height=72)
+        context_paths_scroll.set_child(self.context_paths)
+        context_input_row.append(context_paths_scroll)
+        self.load_context_btn = Gtk.Button(label="Load selected files")
+        self.load_context_btn.connect("clicked", self._load_repo_context)
+        context_input_row.append(self.load_context_btn)
+        context_row.append(context_input_row)
+        compose_box.append(context_row)
+        self.context_summary = Gtk.Label(label="Selected files are sent only to the local model endpoint.", xalign=0, wrap=True)
+        compose_box.append(self.context_summary)
+        self.context_expander = Gtk.Expander(label="Preview exact repository context sent with a new task")
+        self.context_preview = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.NONE)
+        context_scroll = Gtk.ScrolledWindow(min_content_height=100, max_content_height=160)
+        context_scroll.set_child(self.context_preview)
+        self.context_expander.set_child(context_scroll)
+        self.context_expander.set_visible(False)
+        compose_box.append(self.context_expander)
+        submit_row = Gtk.Box(spacing=8)
+        self.submit_btn = Gtk.Button(label="Submit and triage with Qwen")
+        self.submit_btn.add_css_class("suggested-action")
+        self.submit_btn.connect("clicked", self._submit)
+        submit_row.append(self.submit_btn)
+        submit_row.append(Gtk.Label(label="Scores guide routing; confirm low-confidence triage below."))
+        compose_box.append(submit_row)
+        root.append(compose)
+
+        pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True)
+        pane.set_vexpand(True)
+        root.append(pane)
+
+        queues = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        queues.set_size_request(385, -1)
+        pane.set_start_child(queues)
+        pane.set_resize_start_child(False)
+        pane.set_shrink_start_child(False)
+
+        lanes = Gtk.Box(spacing=8)
+        queues.append(lanes)
+        self.qwen_list = self._make_lane(lanes, "Qwen queue")
+        self.glm_list = self._make_lane(lanes, "GLM queue")
+        queues.append(Gtk.Label(label="Select any task to inspect its score, response, and review history.", xalign=0, wrap=True))
+
+        detail_scroll = Gtk.ScrolledWindow()
+        pane.set_end_child(detail_scroll)
+        detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        detail.set_margin_start(14)
+        detail_scroll.set_child(detail)
+        self.task_title = Gtk.Label(label="Select a task", xalign=0)
+        self.task_title.add_css_class("title-2")
+        detail.append(self.task_title)
+        self.meta = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
+        detail.append(self.meta)
+        self.rationale = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
+        detail.append(self.rationale)
+        self.output = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        self.output.set_size_request(-1, 170)
+        out_scroll = Gtk.ScrolledWindow(min_content_height=165)
+        out_scroll.set_child(self.output)
+        detail.append(out_scroll)
+
+        detail.append(Gtk.Label(label="Git working-tree patch", xalign=0))
+        self.git_task_info = Gtk.Label(label="Choose a checkout before submitting a task to enable Git patches.", xalign=0, wrap=True, selectable=True)
+        detail.append(self.git_task_info)
+        self.patch_status = Gtk.Label(label="No patch loaded", xalign=0, wrap=True)
+        detail.append(self.patch_status)
+        self.patch_preview = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.NONE)
+        self.patch_preview.set_size_request(-1, 145)
+        patch_scroll = Gtk.ScrolledWindow(min_content_height=140)
+        patch_scroll.set_child(self.patch_preview)
+        detail.append(patch_scroll)
+        git_actions = Gtk.Box(spacing=8)
+        self.validate_patch_btn = Gtk.Button(label="Validate patch")
+        self.validate_patch_btn.connect("clicked", self._validate_git_patch)
+        git_actions.append(self.validate_patch_btn)
+        self.apply_patch_btn = Gtk.Button(label="Apply approved patch to working tree")
+        self.apply_patch_btn.connect("clicked", self._apply_git_patch)
+        git_actions.append(self.apply_patch_btn)
+        detail.append(git_actions)
+        detail.append(Gtk.Label(label="Applies only to the selected checkout. No staging, commit, or push.", xalign=0, wrap=True))
+
+        assignment = Gtk.Box(spacing=8)
+        assignment.append(Gtk.Label(label="Assigned model:"))
+        self.model_choice = Gtk.DropDown.new_from_strings([QWEN, GLM])
+        assignment.append(self.model_choice)
+        self.assign_btn = Gtk.Button(label="Assign / queue")
+        self.assign_btn.connect("clicked", self._assign)
+        assignment.append(self.assign_btn)
+        self.retry_btn = Gtk.Button(label="Retry blocked task")
+        self.retry_btn.connect("clicked", self._retry)
+        assignment.append(self.retry_btn)
+        detail.append(assignment)
+
+        review_buttons = Gtk.Box(spacing=8)
+        self.copy_btn = Gtk.Button(label="Copy Codex review packet")
+        self.copy_btn.connect("clicked", self._copy_packet)
+        review_buttons.append(self.copy_btn)
+        self.approve_btn = Gtk.Button(label="Approve review")
+        self.approve_btn.connect("clicked", self._approve)
+        review_buttons.append(self.approve_btn)
+        detail.append(review_buttons)
+        self.review = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        self.review.set_size_request(-1, 110)
+        review_scroll = Gtk.ScrolledWindow(min_content_height=105)
+        review_scroll.set_child(self.review)
+        detail.append(Gtk.Label(label="Paste Codex response (APPROVE or CHANGES: …)", xalign=0))
+        detail.append(review_scroll)
+        self.changes_btn = Gtk.Button(label="Return requested changes to assigned model")
+        self.changes_btn.connect("clicked", self._request_changes)
+        detail.append(self.changes_btn)
+        self.history = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
+        detail.append(self.history)
+
+        self.status = Gtk.Label(label="Ready", xalign=0)
+        root.append(self.status)
+        self._refresh()
+        GLib.timeout_add_seconds(2, self._refresh)
+        threading.Thread(target=self._check_health, daemon=True).start()
+
+    def _make_lane(self, parent: Gtk.Box, title: str) -> Gtk.ListBox:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_hexpand(True)
+        box.append(Gtk.Label(label=title, xalign=0))
+        scroller = Gtk.ScrolledWindow(min_content_height=150, vexpand=True)
+        listing = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        listing.connect("row-selected", self._selection)
+        scroller.set_child(listing)
+        box.append(scroller)
+        parent.append(box)
+        return listing
+
+    def _check_health(self) -> None:
+        try:
+            client = LocalClient()
+            models = client.models()
+            text = "Router online · " + (", ".join(models) if models else "no models advertised")
+        except (ValueError, LocalModelError) as exc:
+            text = f"Router unavailable · {exc}"
+        GLib.idle_add(self.health.set_text, text)
+
+    def _submit(self, *_args) -> None:
+        buf = self.prompt.get_buffer()
+        prompt = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True).strip()
+        if not prompt:
+            self.status.set_text("Enter a task before submitting.")
+            return
+        task_id = self.store.create(prompt, git_repo=self.default_git_repo,
+                                    git_context=self.default_git_context,
+                                    git_context_paths=self.default_git_context_paths)
+        buf.set_text("")
+        self.selected_id = task_id
+        self._refresh()
+        self.worker.submit()
+        self.status.set_text("Task saved locally; Qwen triage queued.")
+
+    def _selection(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
+        if row is None:
+            return
+        task_id = getattr(row, "task_id", None)
+        if task_id:
+            self.selected_id = task_id
+            self._refresh()
+
+    def _refresh(self) -> bool:
+        if self._refreshing:
+            return True
+        self._refreshing = True
+        try:
+            tasks = self.store.all()
+            for listing in (self.qwen_list, self.glm_list):
+                child = listing.get_first_child()
+                while child:
+                    nxt = child.get_next_sibling()
+                    listing.remove(child)
+                    child = nxt
+            self.rows.clear()
+            for task in tasks:
+                model = task["assigned_model"] or task["suggested_model"] or QWEN
+                lane = self.glm_list if model == GLM else self.qwen_list
+                label_text = f"{task['id']} · {task['state']}"
+                if task["complexity"]:
+                    label_text += f" · C{task['complexity']} P{task['priority']}"
+                label = Gtk.Label(label=label_text, xalign=0, wrap=True)
+                row = Gtk.ListBoxRow(child=label)
+                row.task_id = task["id"]
+                lane.append(row)
+                self.rows[task["id"]] = row
+            if self.selected_id:
+                self._show_detail(self.store.get(self.selected_id))
+        finally:
+            self._refreshing = False
+        return True
+
+    def _show_detail(self, task: dict | None) -> None:
+        if not task:
+            return
+        self.task_title.set_text(f"Task {task['id']} · {task['state']}")
+        self.meta.set_text(f"Type: {task['task_type'] or 'pending'}   Complexity: {task['complexity'] or '—'}/5   Priority: {task['priority'] if task['priority'] is not None else '—'}/100\nRisk: {task['risk'] or '—'}   Confidence: {task['confidence'] if task['confidence'] is not None else '—'}   Suggested: {task['suggested_model'] or '—'}   Assigned: {task['assigned_model'] or '—'}")
+        self.rationale.set_text("Rationale: " + (task["rationale"] or "Triage is pending."))
+        self.output.get_buffer().set_text(task["output"] or task["error"] or "No model output yet.")
+        self.git_task_info.set_text(
+            f"Checkout: {task['git_repo'] or 'none'}\nContext files: {task['git_context_paths'] or 'none'}\n"
+            f"Patch applied: {'yes · ' + task['git_patch_sha256'][:12] if task['git_patch_sha256'] else 'no'}")
+        if task["id"] != self._patch_task_id or task["output"] != self._patch_output:
+            self._patch_task_id, self._patch_output = task["id"], task["output"]
+            self.patch_validation = None
+            self.patch_value = ""
+            try:
+                self.patch_value = extract_unified_diff(task["output"])
+                self.patch_status.set_text("Patch extracted from model response. Review below; Codex APPROVE is required before validation.")
+            except GitWorkspaceError as exc:
+                self.patch_status.set_text(str(exc))
+            self.patch_preview.get_buffer().set_text(self.patch_value)
+        selected = 1 if (task["assigned_model"] or task["suggested_model"]) == GLM else 0
+        self.model_choice.set_selected(selected)
+        self.assign_btn.set_sensitive(task["state"] in {"needs_attention", "blocked", "queued"})
+        self.retry_btn.set_sensitive(task["state"] == "blocked")
+        self.copy_btn.set_sensitive(bool(task["review_packet"]))
+        self.approve_btn.set_sensitive(task["state"] == "review_pending")
+        self.changes_btn.set_sensitive(task["state"] in {"review_pending", "blocked"} and bool(task["review_packet"]))
+        approved = task["state"] == "done" and task["review_response"].strip().upper().startswith("APPROVE")
+        can_validate = bool(approved and task["git_repo"] and self.patch_value and not task["git_patch_sha256"])
+        self.validate_patch_btn.set_sensitive(can_validate)
+        self.apply_patch_btn.set_sensitive(bool(can_validate and self.patch_validation and self.patch_validation[0] == task["id"]))
+        if task["review_packet"]:
+            self.status.set_text("Codex review is manual: copy packet, review it in Codex, then paste the response.")
+        events = self.store.events(task["id"])
+        self.history.set_text("History:\n" + "\n".join(f"{e['state']} — {e['detail']}" for e in events[-8:]))
+
+    def _assign(self, *_args) -> None:
+        task = self.store.get(self.selected_id or "")
+        if not task or task["state"] not in {"needs_attention", "blocked", "queued"}:
+            return
+        model = GLM if self.model_choice.get_selected() == 1 else QWEN
+        self.store.update(task["id"], "queued", f"User assigned {model}", assigned_model=model)
+        self.worker.submit()
+        self._refresh()
+
+    def _retry(self, *_args) -> None:
+        task = self.store.get(self.selected_id or "")
+        if not task or task["state"] != "blocked":
+            return
+        self.store.update(task["id"], "queued", "User retried task", retry_count=task["retry_count"] + 1)
+        self.worker.submit()
+        self._refresh()
+
+    def _copy_packet(self, *_args) -> None:
+        task = self.store.get(self.selected_id or "")
+        if task and task["review_packet"]:
+            display = Gdk.Display.get_default()
+            display.get_clipboard().set_text(task["review_packet"])
+            self.status.set_text("Review packet copied to clipboard. Paste it into Codex manually.")
+
+    def _review_text(self) -> str:
+        buf = self.review.get_buffer()
+        return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True).strip()
+
+    def _approve(self, *_args) -> None:
+        task = self.store.get(self.selected_id or "")
+        response = self._review_text()
+        if not task or task["state"] != "review_pending":
+            return
+        if not response.upper().startswith("APPROVE"):
+            self.status.set_text("Use APPROVE here; use the changes button for CHANGES instructions.")
+            return
+        self.store.update(task["id"], "done", "User recorded Codex review approval", review_response=response)
+        self._refresh()
+
+    def _choose_repo(self, *_args) -> None:
+        dialog = Gtk.FileChooserNative.new("Select Git checkout", self, Gtk.FileChooserAction.SELECT_FOLDER, "Select", "Cancel")
+        dialog.connect("response", self._repo_chosen)
+        self._repo_dialog = dialog
+        dialog.show()
+
+    def _clear_repo(self, *_args) -> None:
+        self.default_git_repo = ""
+        self.default_git_context = ""
+        self.default_git_context_paths = ""
+        self.context_paths.get_buffer().set_text("")
+        self.context_preview.get_buffer().set_text("")
+        self.context_expander.set_visible(False)
+        self.repo_summary.set_text("No repository attached")
+        self.context_summary.set_text("Selected files are sent only to the local model endpoint.")
+
+    def _repo_chosen(self, dialog: Gtk.FileChooserNative, response: int) -> None:
+        if response == Gtk.ResponseType.ACCEPT:
+            selected = dialog.get_file()
+            try:
+                root = repository_root(selected.get_path())
+                self.default_git_repo = str(root)
+                self.default_git_context = ""
+                self.default_git_context_paths = ""
+                self.context_paths.get_buffer().set_text("")
+                self.context_preview.get_buffer().set_text("")
+                self.context_expander.set_visible(False)
+                self.repo_summary.set_text(str(root))
+                self.context_summary.set_text("Checkout selected. Add specific relative source files to give the local model repository context.")
+            except (AttributeError, GitWorkspaceError) as exc:
+                self.status.set_text(f"Git checkout not selected: {exc}")
+        dialog.destroy()
+
+    def _load_repo_context(self, *_args) -> None:
+        if not self.default_git_repo:
+            self.status.set_text("Choose a Git checkout first.")
+            return
+        try:
+            paths_buffer = self.context_paths.get_buffer()
+            requested = paths_buffer.get_text(paths_buffer.get_start_iter(), paths_buffer.get_end_iter(), True)
+            root, names, context = read_context(self.default_git_repo, requested)
+            self.default_git_repo = str(root)
+            self.default_git_context_paths = "\n".join(names)
+            self.default_git_context = context
+            self.context_preview.get_buffer().set_text(context)
+            self.context_expander.set_visible(True)
+            self.context_summary.set_text(f"Loaded {len(names)} file(s), {len(context.encode('utf-8'))} bytes. This snapshot will be sent to the local model with the next task.")
+        except GitWorkspaceError as exc:
+            self.status.set_text(f"Could not load repository context: {exc}")
+
+    def _context_paths_changed(self, *_args) -> None:
+        self.default_git_context = ""
+        self.default_git_context_paths = ""
+        self.context_expander.set_visible(False)
+        if self.default_git_repo:
+            self.context_summary.set_text("File list changed; press Load selected files to preview and attach the new snapshot.")
+
+    def _validate_git_patch(self, *_args) -> None:
+        task = self.store.get(self.selected_id or "")
+        if not task or task["state"] != "done" or not task["review_response"].strip().upper().startswith("APPROVE"):
+            self.status.set_text("A pasted Codex APPROVE is required before patch validation.")
+            return
+        if task["git_patch_sha256"]:
+            self.status.set_text("A patch was already applied for this task.")
+            return
+        try:
+            root, paths, digest = validate_patch(task["git_repo"], self.patch_value)
+            self.patch_validation = (task["id"], str(root), digest)
+            self.patch_status.set_text(f"PASS · git apply --check · {len(paths)} file(s): {', '.join(paths)} · SHA-256 {digest}")
+            self._refresh()
+        except GitWorkspaceError as exc:
+            self.patch_validation = None
+            self.patch_status.set_text(f"FAIL · {exc}")
+            self.status.set_text("Patch was not applied.")
+
+    def _apply_git_patch(self, *_args) -> None:
+        task = self.store.get(self.selected_id or "")
+        approval = task["review_response"].strip().upper() if task else ""
+        if (not task or task["state"] != "done" or not approval.startswith("APPROVE")
+                or not self.patch_validation or self.patch_validation[0] != task["id"]):
+            self.status.set_text("Select a Codex-approved task and validate its patch before applying.")
+            return
+        if task["git_patch_sha256"]:
+            self.status.set_text("This task's patch has already been applied.")
+            return
+        dialog = Gtk.MessageDialog(
+            transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text="Apply this Codex-approved patch to the selected Git working tree?",
+        )
+        dialog.set_secondary_text("The app will modify only the validated files. It will not stage, commit, or push changes.")
+        dialog.connect("response", self._confirm_apply_git_patch, task["id"])
+        dialog.present()
+
+    def _confirm_apply_git_patch(self, dialog: Gtk.MessageDialog, response: int, task_id: str) -> None:
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        task = self.store.get(task_id)
+        approval = task["review_response"].strip().upper() if task else ""
+        if (not task or task["state"] != "done" or not approval.startswith("APPROVE")
+                or not self.patch_validation or self.patch_validation[0] != task_id):
+            self.status.set_text("Task changed since validation; validate its approved patch again.")
+            return
+        if task["git_patch_sha256"]:
+            self.status.set_text("This task's patch has already been applied.")
+            return
+        try:
+            check_root, _check_paths, check_digest = validate_patch(task["git_repo"], self.patch_value)
+            if check_digest != self.patch_validation[2] or str(check_root) != self.patch_validation[1]:
+                raise GitWorkspaceError("Patch or checkout changed since validation; validate again")
+            root, paths, digest = apply_git_patch(task["git_repo"], self.patch_value)
+            if digest != self.patch_validation[2] or str(root) != self.patch_validation[1]:
+                raise GitWorkspaceError("Patch or checkout changed since validation; validate again")
+            self.store.update(task["id"], "done", f"Applied Codex-approved patch to {root}: {', '.join(paths)}; SHA-256 {digest}",
+                              git_repo=str(root), git_patch_sha256=digest)
+            self.patch_validation = None
+            self._refresh()
+            self.status.set_text(f"Applied {len(paths)} file(s) to the Git working tree. No stage, commit, or push was performed.")
+        except GitWorkspaceError as exc:
+            self.patch_validation = None
+            self.patch_status.set_text(f"FAIL · {exc}")
+            self.status.set_text("Patch was not applied.")
+
+    def _request_changes(self, *_args) -> None:
+        task = self.store.get(self.selected_id or "")
+        response = self._review_text()
+        if not task or task["state"] not in {"review_pending", "blocked"} or not response:
+            self.status.set_text("Select a task with a review packet and paste actionable Codex changes.")
+            return
+        if response.upper().startswith("APPROVE"):
+            self.status.set_text("This is an approval. Use Approve review.")
+            return
+        self.store.update(task["id"], "revision_queued", "Codex requested changes; returning to the original model", review_response=response)
+        self.worker.submit()
+        self._refresh()
+
+
+class RouterApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.local.multimodal.Router", flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.store: TaskStore | None = None
+        self.worker: TaskWorker | None = None
+        self.lock_file = None
+
+    def do_activate(self) -> None:
+        if self.store is None:
+            lock_path = data_dir() / "router.lock"
+            self.lock_file = open(lock_path, "w")
+            try:
+                fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                dialog = Gtk.AlertDialog(message="Another task router instance already owns the local worker.")
+                dialog.show(self.get_active_window())
+                self.quit()
+                return
+            self.store = TaskStore()
+            self.worker = TaskWorker(self.store, LocalClient(), lambda tid: GLib.idle_add(self.window._refresh))
+            self.window = RouterWindow(self, self.store, self.worker)
+            if any(t["state"] in {"triage_pending", "queued", "revision_queued"} for t in self.store.all()):
+                self.worker.submit()
+        self.window.present()
+
+    def do_shutdown(self) -> None:
+        if self.worker:
+            self.worker.close()
+        if self.store and not (self.worker and self.worker.is_alive):
+            self.store.close()
+        Gtk.Application.do_shutdown(self)
+
+
+def main() -> int:
+    if not Gtk.init_check() or Gdk.Display.get_default() is None:
+        print("Multi Modal requires an active Linux graphical session; GTK could not connect to a display.", file=sys.stderr)
+        return 2
+    return RouterApp().run(sys.argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
