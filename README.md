@@ -29,4 +29,8 @@ Qwen handles triage and is the default task model. GLM is available for user-con
 
 For repository tasks, users can attach a Git checkout and selected text files as local model context. A proposed unified diff can be applied to clean working-tree files only after Codex approval, validation, and a separate confirmation. The app never stages, commits, or pushes. See [the operator guide](docs/OPERATIONS.md) and [architecture notes](docs/ARCHITECTURE.md).
 
+## Repository sweep and change control
+
+Documentation and maintenance passes follow the generalized [repository sweep decision-routing policy](https://github.com/pskeffington/agent_skills/blob/main/docs/REPO_SWEEP_DECISION_ROUTING.md). The policy keeps proposed changes reviewable, records blockers as evidence-backed handoffs, and does not imply that local model output or a clean working tree is production approval.
+
 The project is MIT-licensed. See [LICENSE](LICENSE).
