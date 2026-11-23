@@ -20,6 +20,7 @@ from multi_modal.worker import TASK_ASSISTANT_SYSTEM, TaskWorker, classify_task,
 
 
 SYSTEM = TASK_ASSISTANT_SYSTEM
+QA_MAX_TOKENS = 2048  # Match LocalClient/TaskWorker production completion budget.
 
 CASES = [
     {
@@ -171,15 +172,15 @@ def evaluate_case(client: LocalClient, case: dict) -> dict:
         history = [{"role": "system", "content": SYSTEM}]
         for turn in case["turns"]:
             history.append({"role": "user", "content": turn["user"]})
-            answer = client.chat(QWEN, history, timeout=300, max_tokens=768)
+            answer = client.chat(QWEN, history, timeout=300, max_tokens=QA_MAX_TOKENS)
             answers.append(answer)
             history.append({"role": "assistant", "content": answer})
     else:
         answer = client.chat(QWEN, [{"role": "system", "content": SYSTEM}, *case["messages"]],
-                             timeout=300, max_tokens=768)
+                             timeout=300, max_tokens=QA_MAX_TOKENS)
         answers.append(answer)
     automated = check_answer(answers[-1], case["checks"])
-    return {"id": case["id"], "answers": answers,
+    return {"id": case["id"], "answers": answers, "max_tokens": QA_MAX_TOKENS,
             "latency_seconds": round(time.monotonic() - started, 3),
             "automated_checks": automated,
             "automated_status": "PASS" if checks_passed(automated) else "FAIL",
@@ -231,7 +232,7 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
                  response_format: dict | None = None) -> str:
             self.calls.append((model, [dict(message) for message in messages], timeout))
             return client.chat(model, messages, timeout=timeout, response_format=response_format,
-                               max_tokens=768)
+                               max_tokens=QA_MAX_TOKENS)
 
     recorder = RecordingClient()
     temporary = tempfile.TemporaryDirectory(prefix="multi-modal-prompt-qa-")
@@ -279,6 +280,7 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
             "review_approval_and_follow_up_recorded": "done" in event_states and event_states.count("review_pending") >= 2,
         }
         result = {"id": "persisted-review-follow-up-workflow", "prompt": prompt,
+                  "max_tokens": QA_MAX_TOKENS,
                   "follow_up": follow_up, "answers": [first_answer, second["output"]],
                   "automated_checks": checks,
                   "automated_status": "PASS" if checks_passed(checks) else "FAIL",
@@ -303,7 +305,11 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
 
 def main() -> int:
     report = {"started_at": datetime.now(timezone.utc).isoformat(), "configured_model": QWEN,
-              "suite": "full local Qwen system QA", "cases": []}
+              "suite": "full local Qwen system QA",
+              "generation_config": {"direct_answer_max_tokens": QA_MAX_TOKENS,
+                                    "triage_max_tokens": 512,
+                                    "matches_production_task_budget": True},
+              "cases": []}
     try:
         client = LocalClient()
         catalog = client.model_catalog()

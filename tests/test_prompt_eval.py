@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from prompt_qa import (CASES, SYSTEM, check_answer, checks_passed,
+from prompt_qa import (CASES, QA_MAX_TOKENS, SYSTEM, check_answer, checks_passed,
                        evaluate_case, evaluate_persisted_conversation, evaluate_triage)
 from multi_modal.client import QWEN, LocalModelError
 from multi_modal.worker import TASK_ASSISTANT_SYSTEM, TRIAGE_RESPONSE_FORMAT
@@ -30,6 +30,7 @@ class PromptEvalRubricTests(unittest.TestCase):
         report = json.loads(output.getvalue())
         self.assertEqual(code, 2)
         self.assertEqual(report["execution_status"], "BLOCKED")
+        self.assertEqual(report["generation_config"]["direct_answer_max_tokens"], QA_MAX_TOKENS)
         self.assertEqual(report["automated_summary"]["total"], len(CASES) + 2)
         self.assertEqual(report["automated_summary"]["completed"], 0)
 
@@ -119,6 +120,7 @@ class PromptEvalRubricTests(unittest.TestCase):
         result = evaluate_persisted_conversation(ScriptedClient(), wait_timeout=3)
         self.assertEqual(result["automated_status"], "PASS")
         self.assertTrue(all(result["automated_checks"].values()))
+        self.assertEqual(result["max_tokens"], QA_MAX_TOKENS)
 
     def test_live_suite_uses_production_assistant_system_prompt(self) -> None:
         self.assertEqual(SYSTEM, TASK_ASSISTANT_SYSTEM)
@@ -132,7 +134,7 @@ class PromptEvalRubricTests(unittest.TestCase):
 
             def chat(self, model: str, messages: list[dict], timeout: float,
                      response_format: dict | None = None, max_tokens: int = 2048) -> str:
-                self.calls.append((model, list(messages), timeout))
+                self.calls.append((model, list(messages), timeout, max_tokens))
                 return ("A stack is last in, first out." if len(self.calls) == 1
                         else "items.append('x') pushes an item; items.pop() removes it.")
 
@@ -144,6 +146,8 @@ class PromptEvalRubricTests(unittest.TestCase):
         self.assertEqual(client.calls[1][1][-2], {
             "role": "assistant", "content": "A stack is last in, first out.",
         })
+        self.assertTrue(all(call[3] == QA_MAX_TOKENS for call in client.calls))
+        self.assertEqual(result["max_tokens"], QA_MAX_TOKENS)
         self.assertEqual(result["answers"][0], "A stack is last in, first out.")
 
     def test_arithmetic_rubric_detects_wrong_result(self) -> None:
