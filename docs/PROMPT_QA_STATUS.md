@@ -3,8 +3,8 @@
 ## Baseline and scope
 
 - Repository: `multi_modal`
-- Source commit: `0e69cabd0750a8345693ed9edaac163356939b27`
-- Observed: `2026-11-23 05:17 UTC`
+- Source commit: `fe8217fc0990556e8cef5f790b76f099809d8a51`
+- Observed: `2026-11-23 05:32 UTC`
 - QA scope: prompt routing and validation, persisted multi-turn conversation, response lifecycle, revision context, llama.cpp client contract, Qwen live prompt quality, and GTK prompt workflow.
 
 ## Results
