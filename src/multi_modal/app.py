@@ -444,7 +444,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.meta.set_text(f"Type: {task['task_type'] or 'pending'}   Complexity: {task['complexity'] or '—'}/5   Priority: {task['priority'] if task['priority'] is not None else '—'}/100\nRisk: {task['risk'] or '—'}   Confidence: {task['confidence'] if task['confidence'] is not None else '—'}   Suggested: {task['suggested_model'] or '—'}   Assigned: {task['assigned_model'] or '—'}")
         routing = task.get("routing_reason") or "Routing policy will be shown after triage."
         self.rationale.set_text("Triage: " + (task["rationale"] or "Triage is pending.") + "\nRouting: " + routing)
-        self.output.get_buffer().set_text(task["output"] or task["error"] or "No model output yet.")
+        self.output.get_buffer().set_text(task["error"] if task["state"] == "blocked" and task["error"] else task["output"] or "No model output yet.")
         self.git_task_info.set_text(
             f"Checkout: {task['git_repo'] or 'none'}\nContext files: {task['git_context_paths'] or 'none'}\n"
             f"Patch applied: {'yes · ' + task['git_patch_sha256'][:12] if task['git_patch_sha256'] else 'no'}")
@@ -527,8 +527,11 @@ class RouterWindow(Gtk.ApplicationWindow):
         if self.available_models is not None and not self.resolved_models.get(model):
             self.status.set_text(f"{model} is not advertised by the local router; assign an available model before retrying.")
             return
-        if not self.store.update_if_state(task["id"], {"blocked"}, "queued", "User retried task",
-                                          retry_count=task["retry_count"] + 1):
+        triage_failed = not task["assigned_model"] and not task["suggested_model"] and task["complexity"] is None
+        retry_state = "triage_pending" if triage_failed else "queued"
+        retry_detail = "User retried Qwen triage" if triage_failed else "User retried task"
+        if not self.store.update_if_state(task["id"], {"blocked"}, retry_state, retry_detail,
+                                          retry_count=task["retry_count"] + 1, error=""):
             self.status.set_text("Task state changed before retry; inspect its current state.")
             self._refresh()
             return
