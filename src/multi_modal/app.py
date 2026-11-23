@@ -18,7 +18,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk
 from .client import GLM, QWEN, LocalClient, LocalModelError, resolve_model_id
 from .git_workspace import GitWorkspaceError, apply_patch as apply_git_patch, extract_unified_diff, read_context, repository_root, validate_patch
 from .router_control import RouterControlError, start_user_router
-from .prompt_qa_reports import load_report, report_path, save_report
+from .prompt_qa_reports import ensure_report_archive_dir, load_report, report_path, save_report
 from .store import TaskStore, data_dir
 from .web_research import research as scrape_web
 from .worker import TaskWorker, retry_state_for_task
@@ -84,6 +84,10 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.open_qa_btn.set_tooltip_text(f"Open saved report: {self.latest_prompt_qa_report}")
         self.open_qa_btn.connect("clicked", self._open_latest_prompt_qa)
         header.append(self.open_qa_btn)
+        self.browse_qa_btn = Gtk.Button(label="Browse QA reports")
+        self.browse_qa_btn.set_tooltip_text("Open the folder containing timestamped prompt QA reports")
+        self.browse_qa_btn.connect("clicked", self._browse_prompt_qa_reports)
+        header.append(self.browse_qa_btn)
         root.append(header)
 
         compose = Gtk.Frame(label="Message")
@@ -534,6 +538,13 @@ class RouterWindow(Gtk.ApplicationWindow):
             self.status.set_text(f"No readable saved prompt QA report: {exc}")
             return
         self._show_prompt_qa_report(report)
+
+    def _browse_prompt_qa_reports(self, *_args) -> None:
+        try:
+            directory = ensure_report_archive_dir()
+            Gio.AppInfo.launch_default_for_uri(directory.as_uri(), None)
+        except (OSError, GLib.Error) as exc:
+            self.status.set_text(f"Could not open prompt QA report folder: {exc}")
 
     def _show_prompt_qa_report(self, report: str) -> None:
         window = Gtk.Window(title="Live Qwen Prompt QA", transient_for=self, modal=True,

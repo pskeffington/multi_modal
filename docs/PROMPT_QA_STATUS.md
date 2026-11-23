@@ -3,7 +3,7 @@
 ## Baseline and scope
 
 - Repository: `multi_modal`
-- Source commit: `43f256491af2d164bb165302c5dd05a58864f81e` (published to `main`)
+- Source commit: `4c8402183ba3e62590c1383d82388d821995c950` (published to `main`; timestamped report archives are pending commit)
 - Observed: `2026-11-23 05:56 UTC`
 - QA scope: prompt routing and validation, persisted multi-turn conversation, response lifecycle, revision context, llama.cpp client contract, Qwen live prompt quality, and GTK prompt workflow.
 
@@ -11,11 +11,11 @@
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Prompt/workflow contract suite | PASS | `make test`: 49 tests passed. This includes explicit prompt-aligned coding/ambiguity constraints, universal empty-answer rejection, syntax-only parsing for Python code fences (never execution), report persistence, and prior worker/router state coverage. |
+| Prompt/workflow contract suite | PASS | `make test`: 50 tests passed. This includes archive/latest persistence, private file permissions, explicit prompt-aligned coding/ambiguity constraints, empty-answer rejection, and syntax-only Python parsing. |
 | Build and package checks | PASS | `make check`, `python3 -m py_compile scripts/prompt_qa.py`, and `git diff --check` completed with exit 0. |
 | Live Qwen prompt matrix from this shell | BLOCKED | `make prompt-qa` exited 2: local Qwen endpoint could not be reached (`Operation not permitted` from this execution environment). A separate probe to `127.0.0.1:9931` found no listening service. No model answers were generated or scored. |
 | Live Qwen prompt matrix from desktop GUI | FAIL | User-provided report from `2026-11-23T05:33:10Z`: 4/10 automated cases passed, 6 failed. Four answers were empty. Two other automated failures exposed rubric mismatch: requested IPv4 examples were not specified exactly, and the ambiguity answer had an unrequested 100-word cap. Manual inspection found one generated Python test had an unquoted dotted address and was invalid syntax. Arithmetic, multi-turn follow-up, context grounding, and translation passed automated checks. This earlier 10-case report lacks finish-reason/token metadata; broader semantic review was not recorded. |
-| Live Qwen full-system QA from desktop GUI | BLOCKED pending updated report | The updated in-app **Run prompt QA** action launches a 12-case suite: production triage/repair, 10 prompt types, and a persisted app conversation. It now saves complete/partial JSON reports privately, diagnoses empty completions without recording reasoning text, aligns coding/ambiguity constraints with their rubrics, and parses generated Python syntax without execution. The updated app must be reopened and the suite run for full-system evidence. |
+| Live Qwen full-system QA from desktop GUI | BLOCKED pending updated report | The updated in-app **Run prompt QA** action launches a 12-case suite: production triage/repair, 10 prompt types, and a persisted app conversation. It saves complete/partial JSON reports privately, archives each run, diagnoses empty completions without recording reasoning text, aligns coding/ambiguity constraints with their rubrics, and parses generated Python syntax without execution. **Browse QA reports** opens the archive directory. The updated app must be reopened and the suite run for full-system evidence. |
 | Start the local llama router | BLOCKED | `systemctl --user restart llama-router.service` could not connect to the user service bus (`Operation not permitted`). Prior host logs show the Qwen model had served requests, but that does not prove it is running now. |
 | Desktop router recovery control | PASS (mocked) | The GUI's **Start local router** action uses only the fixed command `systemctl --user start llama-router.service`, then polls the local model catalog. Four unit checks cover already-running, successful start, service error, and unavailable desktop bus. Actual desktop-session startup remains unverified here. |
 | Rendered GUI inspection | BLOCKED | `scripts/launch.sh` reports no active display. GTK initializes, but `Gdk.Display.get_default()` is `None`; visual layout and keyboard interaction were not observed. |

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from multi_modal.prompt_qa_reports import load_report, report_path, save_report
+from multi_modal.prompt_qa_reports import list_reports, load_report, report_path, save_report
 
 
 class PromptQAReportStorageTests(unittest.TestCase):
@@ -35,6 +35,19 @@ class PromptQAReportStorageTests(unittest.TestCase):
                       "automated_summary": {"passed": 0, "failed": 0, "blocked": 12}}
             save_report(report, path)
             self.assertEqual(json.loads(load_report(path))["execution_status"], "BLOCKED")
+
+    def test_each_run_is_archived_and_latest_points_to_newest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+            first = {"started_at": "2026-11-23T05:30:00+00:00", "run": 1}
+            second = {"started_at": "2026-11-23T05:31:00+00:00", "run": 2}
+            save_report(first, path)
+            save_report(second, path)
+            archived = list_reports(path)
+            self.assertEqual(len(archived), 2)
+            self.assertTrue(all(item.stat().st_mode & 0o777 == 0o600 for item in archived))
+            self.assertEqual(json.loads(load_report(path)), second)
+            self.assertEqual(json.loads(archived[-1].read_text(encoding="utf-8")), first)
 
 
 if __name__ == "__main__":
