@@ -6,7 +6,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from multi_modal.client import QWEN, LocalClient, LocalModelError
+from multi_modal.client import (QWEN, LocalClient, LocalModelError,
+                                fit_messages_to_budget)
 
 
 class LocalClientHttpTests(unittest.TestCase):
@@ -38,6 +39,8 @@ class LocalClientHttpTests(unittest.TestCase):
                 requests.append((path, payload))
                 if path == "/v1/models":
                     body = {"data": [{"id": QWEN + ":Q4_K_M", "status": {"value": "available"}}]}
+                elif path == "/v1/chat/completions/input_tokens":
+                    body = {"input_tokens": 12}
                 elif path == "/v1/chat/completions":
                     body = {"choices": [{"message": {"content": "Loopback answer."}, "finish_reason": "stop"}]}
                 else:
@@ -60,6 +63,8 @@ class LocalClientHttpTests(unittest.TestCase):
         self.assertFalse(post["stream"])
         self.assertEqual(post["response_format"], response_format)
         self.assertEqual(post["max_tokens"], 512)
+        self.assertEqual(post["thinking_budget_tokens"], 1024)
+        self.assertEqual(self.client.last_prompt_stats["input_tokens_after"], 12)
 
     def test_invalid_max_tokens_is_rejected(self) -> None:
         for value in (0, -1, True, 1.5):
@@ -67,10 +72,35 @@ class LocalClientHttpTests(unittest.TestCase):
                 self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2,
                                  max_tokens=value)
 
+    def test_history_fitting_preserves_original_and_newest_turns(self) -> None:
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "original"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "old middle question"},
+            {"role": "assistant", "content": "old middle answer"},
+            {"role": "user", "content": "newest request"},
+        ]
+        def fake_count(candidate: list[dict]) -> int:
+            return 100 if any(message.get("content") == "old middle question" for message in candidate) else 40
+
+        fitted, stats = fit_messages_to_budget(messages, 55, fake_count)
+        user_content = [message["content"] for message in fitted if message["role"] == "user"]
+        self.assertEqual(user_content, ["original", "newest request"])
+        self.assertEqual(stats["omitted_history_turns"], 1)
+        self.assertLessEqual(stats["input_tokens_after"], 55)
+        self.assertIn("omitted", fitted[0]["content"])
+
+    def test_history_fitting_blocks_if_current_prompt_cannot_fit(self) -> None:
+        with self.assertRaisesRegex(LocalModelError, "Shorten the current request"):
+            fit_messages_to_budget([{"role": "user", "content": "too large"}], 1,
+                                   lambda _messages: 2)
+
     def test_empty_final_answer_is_reported_with_safe_generation_metadata(self) -> None:
         with self.mock_transport():
             with patch("multi_modal.client.LocalClient.request", side_effect=[
                 {"data": [{"id": QWEN}]},
+                {"input_tokens": 12},
                 {"choices": [{"message": {"content": "", "reasoning_content": "private reasoning"},
                               "finish_reason": "length"}],
                  "usage": {"completion_tokens": 768}},

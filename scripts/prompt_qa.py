@@ -14,13 +14,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from multi_modal.client import GLM, QWEN, LocalClient, LocalModelError, resolve_model_id
+from multi_modal.client import (DEFAULT_CONTEXT_TOKENS, DEFAULT_MAX_TOKENS,
+                                DEFAULT_THINKING_BUDGET_TOKENS, GLM, QWEN,
+                                LocalClient, LocalModelError, resolve_model_id)
 from multi_modal.store import TaskStore
-from multi_modal.worker import TASK_ASSISTANT_SYSTEM, TaskWorker, classify_task, choose_model
+from multi_modal.worker import (TASK_ASSISTANT_SYSTEM, TRIAGE_MAX_TOKENS,
+                                TRIAGE_THINKING_BUDGET_TOKENS, TaskWorker,
+                                classify_task, choose_model)
 
 
 SYSTEM = TASK_ASSISTANT_SYSTEM
-QA_MAX_TOKENS = 2048  # Match LocalClient/TaskWorker production completion budget.
+QA_MAX_TOKENS = DEFAULT_MAX_TOKENS
 
 CASES = [
     {
@@ -168,19 +172,25 @@ def evaluate_case(client: LocalClient, case: dict) -> dict:
     """Run one case while preserving generated turns as actual conversation history."""
     started = time.monotonic()
     answers = []
+    token_stats = []
     if "turns" in case:
         history = [{"role": "system", "content": SYSTEM}]
         for turn in case["turns"]:
             history.append({"role": "user", "content": turn["user"]})
-            answer = client.chat(QWEN, history, timeout=300, max_tokens=QA_MAX_TOKENS)
+            answer = client.chat(QWEN, history, timeout=300, max_tokens=QA_MAX_TOKENS,
+                                 thinking_budget_tokens=DEFAULT_THINKING_BUDGET_TOKENS)
             answers.append(answer)
+            token_stats.append(dict(getattr(client, "last_prompt_stats", {})))
             history.append({"role": "assistant", "content": answer})
     else:
         answer = client.chat(QWEN, [{"role": "system", "content": SYSTEM}, *case["messages"]],
-                             timeout=300, max_tokens=QA_MAX_TOKENS)
+                             timeout=300, max_tokens=QA_MAX_TOKENS,
+                             thinking_budget_tokens=DEFAULT_THINKING_BUDGET_TOKENS)
         answers.append(answer)
+        token_stats.append(dict(getattr(client, "last_prompt_stats", {})))
     automated = check_answer(answers[-1], case["checks"])
     return {"id": case["id"], "answers": answers, "max_tokens": QA_MAX_TOKENS,
+            "prompt_token_stats": token_stats,
             "latency_seconds": round(time.monotonic() - started, 3),
             "automated_checks": automated,
             "automated_status": "PASS" if checks_passed(automated) else "FAIL",
@@ -199,6 +209,7 @@ def evaluate_triage(client: LocalClient) -> dict:
                   "route_valid": route in {QWEN, GLM}}
         return {"id": "qwen-triage-schema-and-routing", "prompt": prompt,
                 "raw_response": attempts[-1], "attempt_count": len(attempts), "triage": data,
+                "prompt_token_stats": dict(getattr(client, "last_prompt_stats", {})),
                 "normalized": {"complexity": complexity, "priority": priority,
                                "confidence": confidence, "assigned_model": route,
                                "routing_reason": reason},
@@ -209,11 +220,13 @@ def evaluate_triage(client: LocalClient) -> dict:
     except LocalModelError as exc:
         return {"id": "qwen-triage-schema-and-routing", "prompt": prompt,
                 "error": str(exc), "latency_seconds": round(time.monotonic() - started, 3),
+                "prompt_token_stats": dict(getattr(client, "last_prompt_stats", {})),
                 "automated_checks": {"router_available": False}, "automated_status": "BLOCKED",
                 "manual_review_criteria": "Inspect the malformed schema or local model error."}
     except (ValueError, TypeError) as exc:
         return {"id": "qwen-triage-schema-and-routing", "prompt": prompt,
                 "error": str(exc), "latency_seconds": round(time.monotonic() - started, 3),
+                "prompt_token_stats": dict(getattr(client, "last_prompt_stats", {})),
                 "automated_checks": {"schema_valid": False}, "automated_status": "FAIL",
                 "manual_review_criteria": "Inspect the malformed triage schema."}
 
@@ -229,10 +242,13 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
             self.calls: list[tuple[str, list[dict], float]] = []
 
         def chat(self, model: str, messages: list[dict], timeout: float,
-                 response_format: dict | None = None) -> str:
-            self.calls.append((model, [dict(message) for message in messages], timeout))
+                 response_format: dict | None = None, max_tokens: int = QA_MAX_TOKENS,
+                 thinking_budget_tokens: int = DEFAULT_THINKING_BUDGET_TOKENS) -> str:
+            self.calls.append((model, [dict(message) for message in messages], timeout,
+                               max_tokens, thinking_budget_tokens))
             return client.chat(model, messages, timeout=timeout, response_format=response_format,
-                               max_tokens=QA_MAX_TOKENS)
+                               max_tokens=max_tokens,
+                               thinking_budget_tokens=thinking_budget_tokens)
 
     recorder = RecordingClient()
     temporary = tempfile.TemporaryDirectory(prefix="multi-modal-prompt-qa-")
@@ -307,8 +323,11 @@ def main() -> int:
     report = {"started_at": datetime.now(timezone.utc).isoformat(), "configured_model": QWEN,
               "suite": "full local Qwen system QA",
               "generation_config": {"direct_answer_max_tokens": QA_MAX_TOKENS,
-                                    "triage_max_tokens": 512,
-                                    "matches_production_task_budget": True},
+                                    "direct_thinking_budget_tokens": DEFAULT_THINKING_BUDGET_TOKENS,
+                                    "triage_max_tokens": TRIAGE_MAX_TOKENS,
+                                    "triage_thinking_budget_tokens": TRIAGE_THINKING_BUDGET_TOKENS,
+                                    "context_tokens": DEFAULT_CONTEXT_TOKENS,
+                                    "exact_prompt_token_counting": True},
               "cases": []}
     try:
         client = LocalClient()
