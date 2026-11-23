@@ -141,6 +141,7 @@ class LocalClient:
     def chat(self, model: str, messages: list[dict], timeout: float,
              response_format: dict | None = None, max_tokens: int = DEFAULT_MAX_TOKENS,
              thinking_budget_tokens: int = DEFAULT_THINKING_BUDGET_TOKENS) -> str:
+        self.last_prompt_stats = {}
         if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens < 1:
             raise ValueError("max_tokens must be a positive integer")
         if (not isinstance(thinking_budget_tokens, int) or isinstance(thinking_budget_tokens, bool)

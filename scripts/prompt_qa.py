@@ -173,23 +173,38 @@ def evaluate_case(client: LocalClient, case: dict) -> dict:
     started = time.monotonic()
     answers = []
     token_stats = []
-    if "turns" in case:
-        history = [{"role": "system", "content": SYSTEM}]
-        for turn in case["turns"]:
-            history.append({"role": "user", "content": turn["user"]})
-            answer = client.chat(QWEN, history, timeout=300, max_tokens=QA_MAX_TOKENS,
-                                 thinking_budget_tokens=DEFAULT_THINKING_BUDGET_TOKENS)
+    recorder = PromptCallRecorder(client)
+    try:
+        if "turns" in case:
+            history = [{"role": "system", "content": SYSTEM}]
+            for turn in case["turns"]:
+                history.append({"role": "user", "content": turn["user"]})
+                answer = recorder.chat(QWEN, history, timeout=300, max_tokens=QA_MAX_TOKENS,
+                                       thinking_budget_tokens=DEFAULT_THINKING_BUDGET_TOKENS)
+                answers.append(answer)
+                token_stats.append(recorder.calls[-1]["prompt_token_stats"])
+                history.append({"role": "assistant", "content": answer})
+        else:
+            answer = recorder.chat(QWEN, [{"role": "system", "content": SYSTEM}, *case["messages"]],
+                                   timeout=300, max_tokens=QA_MAX_TOKENS,
+                                   thinking_budget_tokens=DEFAULT_THINKING_BUDGET_TOKENS)
             answers.append(answer)
-            token_stats.append(dict(getattr(client, "last_prompt_stats", {})))
-            history.append({"role": "assistant", "content": answer})
-    else:
-        answer = client.chat(QWEN, [{"role": "system", "content": SYSTEM}, *case["messages"]],
-                             timeout=300, max_tokens=QA_MAX_TOKENS,
-                             thinking_budget_tokens=DEFAULT_THINKING_BUDGET_TOKENS)
-        answers.append(answer)
-        token_stats.append(dict(getattr(client, "last_prompt_stats", {})))
+            token_stats.append(recorder.calls[-1]["prompt_token_stats"])
+    except LocalModelError as exc:
+        failed_stats = (recorder.calls[-1]["prompt_token_stats"] if recorder.calls else {})
+        token_stats.append(failed_stats)
+        return {"id": case["id"], "answers": answers, "error": str(exc),
+                "max_tokens": QA_MAX_TOKENS,
+                "thinking_budget_tokens": DEFAULT_THINKING_BUDGET_TOKENS,
+                "generation_requests": recorder.calls,
+                "prompt_token_stats": token_stats,
+                "latency_seconds": round(time.monotonic() - started, 3),
+                "automated_checks": {"case_completed": False}, "automated_status": "BLOCKED",
+                "manual_review_criteria": case["review"]}
     automated = check_answer(answers[-1], case["checks"])
     return {"id": case["id"], "answers": answers, "max_tokens": QA_MAX_TOKENS,
+            "thinking_budget_tokens": DEFAULT_THINKING_BUDGET_TOKENS,
+            "generation_requests": recorder.calls,
             "prompt_token_stats": token_stats,
             "latency_seconds": round(time.monotonic() - started, 3),
             "automated_checks": automated,
@@ -197,19 +212,44 @@ def evaluate_case(client: LocalClient, case: dict) -> dict:
             "manual_review_criteria": case["review"]}
 
 
+class PromptCallRecorder:
+    """Capture safe generation settings and prompt statistics for each call."""
+
+    def __init__(self, client: LocalClient):
+        self.client = client
+        self.calls: list[dict] = []
+
+    def __getattr__(self, name: str):
+        return getattr(self.client, name)
+
+    def chat(self, model: str, messages: list[dict], timeout: float,
+             response_format: dict | None = None, max_tokens: int = QA_MAX_TOKENS,
+             thinking_budget_tokens: int = DEFAULT_THINKING_BUDGET_TOKENS) -> str:
+        call = {"model": model, "max_tokens": max_tokens,
+                "thinking_budget_tokens": thinking_budget_tokens}
+        try:
+            return self.client.chat(model, messages, timeout=timeout,
+                                    response_format=response_format, max_tokens=max_tokens,
+                                    thinking_budget_tokens=thinking_budget_tokens)
+        finally:
+            call["prompt_token_stats"] = dict(getattr(self.client, "last_prompt_stats", {}))
+            self.calls.append(call)
+
+
 def evaluate_triage(client: LocalClient) -> dict:
     """Exercise Qwen's production triage schema and routing policy once live."""
     started = time.monotonic()
     prompt = "A new Linux user asks: How do I list files in this directory?"
+    recorder = PromptCallRecorder(client)
     try:
-        data, complexity, priority, confidence, attempts = classify_task(client, prompt)
+        data, complexity, priority, confidence, attempts = classify_task(recorder, prompt)
         route, reason = choose_model(data["model"], complexity, confidence)
         checks = {"schema_valid": True, "scores_valid": True,
                   "risk_valid": data["risk"] in {"low", "medium", "high"},
                   "route_valid": route in {QWEN, GLM}}
         return {"id": "qwen-triage-schema-and-routing", "prompt": prompt,
                 "raw_response": attempts[-1], "attempt_count": len(attempts), "triage": data,
-                "prompt_token_stats": dict(getattr(client, "last_prompt_stats", {})),
+                "generation_requests": recorder.calls,
                 "normalized": {"complexity": complexity, "priority": priority,
                                "confidence": confidence, "assigned_model": route,
                                "routing_reason": reason},
@@ -220,13 +260,13 @@ def evaluate_triage(client: LocalClient) -> dict:
     except LocalModelError as exc:
         return {"id": "qwen-triage-schema-and-routing", "prompt": prompt,
                 "error": str(exc), "latency_seconds": round(time.monotonic() - started, 3),
-                "prompt_token_stats": dict(getattr(client, "last_prompt_stats", {})),
+                "generation_requests": recorder.calls,
                 "automated_checks": {"router_available": False}, "automated_status": "BLOCKED",
                 "manual_review_criteria": "Inspect the malformed schema or local model error."}
     except (ValueError, TypeError) as exc:
         return {"id": "qwen-triage-schema-and-routing", "prompt": prompt,
                 "error": str(exc), "latency_seconds": round(time.monotonic() - started, 3),
-                "prompt_token_stats": dict(getattr(client, "last_prompt_stats", {})),
+                "generation_requests": recorder.calls,
                 "automated_checks": {"schema_valid": False}, "automated_status": "FAIL",
                 "manual_review_criteria": "Inspect the malformed triage schema."}
 
@@ -239,22 +279,27 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
 
     class RecordingClient:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, list[dict], float]] = []
+            self.calls: list[tuple[str, list[dict], float, int, int]] = []
+            self.prompt_token_stats: list[dict] = []
 
         def chat(self, model: str, messages: list[dict], timeout: float,
                  response_format: dict | None = None, max_tokens: int = QA_MAX_TOKENS,
                  thinking_budget_tokens: int = DEFAULT_THINKING_BUDGET_TOKENS) -> str:
             self.calls.append((model, [dict(message) for message in messages], timeout,
                                max_tokens, thinking_budget_tokens))
-            return client.chat(model, messages, timeout=timeout, response_format=response_format,
-                               max_tokens=max_tokens,
-                               thinking_budget_tokens=thinking_budget_tokens)
+            try:
+                return client.chat(model, messages, timeout=timeout, response_format=response_format,
+                                   max_tokens=max_tokens,
+                                   thinking_budget_tokens=thinking_budget_tokens)
+            finally:
+                self.prompt_token_stats.append(dict(getattr(client, "last_prompt_stats", {})))
 
     recorder = RecordingClient()
     temporary = tempfile.TemporaryDirectory(prefix="multi-modal-prompt-qa-")
     store = TaskStore(Path(temporary.name) / "tasks.sqlite3")
     worker = TaskWorker(store, recorder, lambda _task_id: None)
     result: dict
+    answers: list[str] = []
     try:
         task_id = store.create_direct(prompt, QWEN)
 
@@ -272,6 +317,7 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
         if not first or first["state"] != "review_pending":
             raise LocalModelError(f"First Qwen answer did not reach review: {first.get('error') if first else 'timeout'}")
         first_answer = first["output"]
+        answers.append(first_answer)
         if not store.update_if_state(task_id, {"review_pending"}, "done",
                                      "Prompt QA simulated review approval", review_response="APPROVE"):
             raise LocalModelError("Prompt QA could not approve the first answer for the follow-up check")
@@ -281,6 +327,7 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
         second = wait_for_review()
         if not second or second["state"] != "review_pending":
             raise LocalModelError(f"Follow-up did not reach review: {second.get('error') if second else 'timeout'}")
+        answers.append(second["output"])
         turns = store.messages(task_id)
         event_states = [event["state"] for event in store.events(task_id)]
         assistant_history = recorder.calls[-1][1]
@@ -298,17 +345,40 @@ def evaluate_persisted_conversation(client: LocalClient, *, wait_timeout: float 
         result = {"id": "persisted-review-follow-up-workflow", "prompt": prompt,
                   "max_tokens": QA_MAX_TOKENS,
                   "follow_up": follow_up, "answers": [first_answer, second["output"]],
+                  "thinking_budget_tokens": DEFAULT_THINKING_BUDGET_TOKENS,
+                  "generation_requests": [
+                      {"model": call[0], "max_tokens": call[3],
+                       "thinking_budget_tokens": call[4],
+                       "prompt_token_stats": recorder.prompt_token_stats[index]}
+                      for index, call in enumerate(recorder.calls)
+                  ],
                   "automated_checks": checks,
                   "automated_status": "PASS" if checks_passed(checks) else "FAIL",
                   "manual_review_criteria": "Check arithmetic accuracy, answer usefulness, and whether the follow-up properly reflects the first turn. Review approval is simulated for this test; it does not contact Codex."}
     except LocalModelError as exc:
         result = {"id": "persisted-review-follow-up-workflow", "prompt": prompt,
-                  "follow_up": follow_up, "error": str(exc),
+                  "follow_up": follow_up, "answers": answers, "error": str(exc),
+                  "max_tokens": QA_MAX_TOKENS,
+                  "thinking_budget_tokens": DEFAULT_THINKING_BUDGET_TOKENS,
+                  "generation_requests": [
+                      {"model": call[0], "max_tokens": call[3],
+                       "thinking_budget_tokens": call[4],
+                       "prompt_token_stats": recorder.prompt_token_stats[index]}
+                      for index, call in enumerate(recorder.calls)
+                  ],
                   "automated_checks": {"router_available": False}, "automated_status": "BLOCKED",
                   "manual_review_criteria": "Inspect the local model or router error; no live workflow pass was recorded."}
     except (ValueError, TypeError) as exc:
         result = {"id": "persisted-review-follow-up-workflow", "prompt": prompt,
-                  "follow_up": follow_up, "error": str(exc),
+                  "follow_up": follow_up, "answers": answers, "error": str(exc),
+                  "max_tokens": QA_MAX_TOKENS,
+                  "thinking_budget_tokens": DEFAULT_THINKING_BUDGET_TOKENS,
+                  "generation_requests": [
+                      {"model": call[0], "max_tokens": call[3],
+                       "thinking_budget_tokens": call[4],
+                       "prompt_token_stats": recorder.prompt_token_stats[index]}
+                      for index, call in enumerate(recorder.calls)
+                  ],
                   "automated_checks": {"workflow_completed": False}, "automated_status": "FAIL",
                   "manual_review_criteria": "Inspect the state or model error; no live workflow pass was recorded."}
     finally:

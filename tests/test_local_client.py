@@ -72,6 +72,13 @@ class LocalClientHttpTests(unittest.TestCase):
                 self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2,
                                  max_tokens=value)
 
+    def test_failed_request_clears_previous_prompt_statistics(self) -> None:
+        self.client.last_prompt_stats = {"input_tokens_before": 123}
+        with patch.object(LocalClient, "request", side_effect=LocalModelError("router offline")):
+            with self.assertRaises(LocalModelError):
+                self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2)
+        self.assertEqual(self.client.last_prompt_stats, {})
+
     def test_history_fitting_preserves_original_and_newest_turns(self) -> None:
         messages = [
             {"role": "system", "content": "system"},

@@ -56,7 +56,38 @@ class PromptEvalRubricTests(unittest.TestCase):
         self.assertEqual(report["automated_summary"]["total"], len(CASES) + 2)
         self.assertEqual(report["automated_summary"]["completed"], len(CASES) + 2)
         self.assertEqual(report["automated_summary"]["blocked"], len(CASES) + 2)
-        self.assertEqual(len(report["case_errors"]), len(CASES))
+        for case in report["cases"]:
+            self.assertIn("latency_seconds", case)
+            self.assertIn("generation_requests", case)
+            self.assertTrue(case["generation_requests"])
+            for request in case["generation_requests"]:
+                self.assertIn("max_tokens", request)
+                self.assertIn("thinking_budget_tokens", request)
+
+    def test_blocked_second_turn_retains_first_answer_and_both_request_stats(self) -> None:
+        class PartialConversationClient:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.last_prompt_stats = {}
+
+            def chat(self, model: str, messages: list[dict], timeout: float,
+                     response_format: dict | None = None, max_tokens: int = DEFAULT_MAX_TOKENS,
+                     thinking_budget_tokens: int = DEFAULT_THINKING_BUDGET_TOKENS) -> str:
+                self.calls += 1
+                self.last_prompt_stats = {"input_tokens_before": 20 * self.calls,
+                                          "input_tokens_after": 20 * self.calls,
+                                          "omitted_history_turns": 0}
+                if self.calls == 2:
+                    raise LocalModelError("no final answer text")
+                return "A stack is last in, first out."
+
+        client = PartialConversationClient()
+        case = next(item for item in CASES if item["id"] == "multi-turn-follow-up")
+        result = evaluate_case(client, case)
+        self.assertEqual(result["automated_status"], "BLOCKED")
+        self.assertEqual(result["answers"], ["A stack is last in, first out."])
+        self.assertEqual(len(result["prompt_token_stats"]), 2)
+        self.assertEqual(result["prompt_token_stats"][1]["input_tokens_before"], 40)
 
     def test_live_triage_uses_production_schema_and_checks_route(self) -> None:
         class RecordingClient:
