@@ -66,7 +66,8 @@ class LocalClient:
     def models(self) -> list[str]:
         return [item["id"] for item in self.model_catalog()]
 
-    def chat(self, model: str, messages: list[dict], timeout: float) -> str:
+    def chat(self, model: str, messages: list[dict], timeout: float,
+             response_format: dict | None = None) -> str:
         available = self.models()
         resolved = resolve_model_id(model, available)
         if not resolved:
@@ -74,10 +75,13 @@ class LocalClient:
                 f"Configured model {model!r} is not uniquely advertised by the local router; "
                 "check the model ID or its environment override"
             )
-        data = self.request("/v1/chat/completions", {
+        payload = {
             "model": resolved, "messages": messages, "temperature": 0.1,
             "stream": False, "max_tokens": 2048,
-        }, timeout=timeout)
+        }
+        if response_format is not None:
+            payload["response_format"] = response_format
+        data = self.request("/v1/chat/completions", payload, timeout=timeout)
         try:
             return str(data["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:

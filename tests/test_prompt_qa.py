@@ -11,7 +11,8 @@ from pathlib import Path
 
 from multi_modal.client import GLM, QWEN, LocalModelError, resolve_model_id
 from multi_modal.store import TaskStore
-from multi_modal.worker import TaskWorker, choose_model, json_object, retry_state_for_task, validate_triage
+from multi_modal.worker import (TRIAGE_RESPONSE_FORMAT, TaskWorker, choose_model, json_object,
+                                retry_state_for_task, validate_triage)
 
 
 def triage(*, complexity: int = 1, priority: int = 50, risk: str = "low",
@@ -25,12 +26,13 @@ def triage(*, complexity: int = 1, priority: int = 50, risk: str = "low",
 class ScriptedClient:
     def __init__(self, responses: list[str | Exception]):
         self.responses = list(responses)
-        self.calls: list[tuple[str, list[dict], float]] = []
+        self.calls: list[tuple[str, list[dict], float, dict | None]] = []
         self.lock = threading.Lock()
 
-    def chat(self, model: str, messages: list[dict], timeout: float) -> str:
+    def chat(self, model: str, messages: list[dict], timeout: float,
+             response_format: dict | None = None) -> str:
         with self.lock:
-            self.calls.append((model, messages, timeout))
+            self.calls.append((model, messages, timeout, response_format))
             response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -95,12 +97,41 @@ class PromptWorkflowTests(unittest.TestCase):
         self.assertIn("Separate chaining", task["output"])
         self.assertIn("Codex review request", task["review_packet"])
         self.assertEqual([call[0] for call in client.calls], [QWEN, QWEN])
+        self.assertEqual(client.calls[0][3], TRIAGE_RESPONSE_FORMAT)
+        self.assertIsNone(client.calls[1][3])
+
+    def test_direct_qwen_task_skips_triage_but_enters_review(self) -> None:
+        task_id = self.store.create_direct("Explain what DNS does.", QWEN)
+        client = ScriptedClient(["DNS resolves names to network addresses."])
+        self.worker = TaskWorker(self.store, client, lambda _task_id: None)
+        self.worker.submit()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.store.get(task_id)["state"] not in {"review_pending", "blocked"}:
+            time.sleep(0.01)
+        task = self.store.get(task_id)
+        self.assertEqual(task["state"], "review_pending")
+        self.assertEqual(task["risk"], "unassessed")
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0][0], QWEN)
+        self.assertIsNone(client.calls[0][3])
+
+    def test_unsupported_structured_output_falls_back_to_validated_json_prompt(self) -> None:
+        task_id, client = self.run_task("What does DNS do?", [
+            LocalModelError("HTTP Error 400: unsupported response_format"),
+            triage(), "DNS resolves domain names to addresses.",
+        ])
+        self.assertEqual(self.store.get(task_id)["state"], "review_pending")
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(client.calls[0][3], TRIAGE_RESPONSE_FORMAT)
+        self.assertIsNone(client.calls[1][3])
 
     def test_invalid_json_gets_one_repair_attempt(self) -> None:
         task_id, client = self.run_task("Give me a concise explanation of HTTP status 404.",
                                         ["This is a classification.", triage(), "404 means the server could not find the resource."])
         self.assertEqual(self.store.get(task_id)["state"], "review_pending")
         self.assertEqual(len(client.calls), 3)
+        self.assertEqual(client.calls[0][3], TRIAGE_RESPONSE_FORMAT)
+        self.assertEqual(client.calls[1][3], TRIAGE_RESPONSE_FORMAT)
         repair = client.calls[1][1][-1]["content"]
         self.assertIn("not valid JSON", repair)
 
@@ -131,6 +162,29 @@ class PromptWorkflowTests(unittest.TestCase):
         self.assertEqual(retry_state_for_task(task), "triage_pending")
         routed = dict(task, assigned_model=QWEN, complexity=1)
         self.assertEqual(retry_state_for_task(routed), "queued")
+
+    def test_invalid_triage_can_be_retried_directly_on_qwen(self) -> None:
+        task_id, client = self.run_task("Explain DNS simply.", ["not JSON", "still not JSON"])
+        self.assertEqual(self.store.get(task_id)["state"], "blocked")
+        self.assertTrue(self.store.retry_blocked_direct(task_id, QWEN))
+        client.responses.append("DNS translates names into addresses computers can use.")
+        self.worker.submit()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.store.get(task_id)["state"] not in {"review_pending", "blocked"}:
+            time.sleep(0.01)
+        task = self.store.get(task_id)
+        self.assertEqual(task["state"], "review_pending")
+        self.assertEqual(task["output"], "DNS translates names into addresses computers can use.")
+        self.assertEqual(task["assigned_model"], QWEN)
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(client.calls[-1][1][-1], {"role": "user", "content": "Explain DNS simply."})
+
+    def test_direct_retry_rejects_tasks_that_already_passed_triage(self) -> None:
+        task_id = self.store.create("Already routed")
+        self.store.update(task_id, "blocked", "Inference failed", assigned_model=QWEN,
+                          suggested_model=QWEN, complexity=1)
+        self.assertFalse(self.store.retry_blocked_direct(task_id, QWEN))
+        self.assertEqual(self.store.get(task_id)["state"], "blocked")
 
     def test_high_risk_or_low_confidence_requires_user_decision(self) -> None:
         task_id, client = self.run_task("Delete all data.", [triage(risk="high")])

@@ -98,6 +98,24 @@ class TaskStore:
             self.db.commit()
         return task_id
 
+    def create_direct(self, prompt: str, model: str, *, git_repo: str = "",
+                      git_context: str = "", git_context_paths: str = "") -> str:
+        """Queue a user-selected model directly, without automated triage."""
+        if not prompt.strip() or not model.strip():
+            raise ValueError("A prompt and assigned model are required")
+        task_id, now = uuid.uuid4().hex[:12], time.time()
+        reason = "User explicitly selected direct inference; automated triage was skipped."
+        with self.lock:
+            self.db.execute(
+                """INSERT INTO tasks(id,created,updated,prompt,state,task_type,risk,rationale,
+                   suggested_model,routing_reason,assigned_model,git_repo,git_context,git_context_paths)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (task_id, now, now, prompt.strip(), "queued", "general", "unassessed", reason,
+                 model, reason, model, git_repo, git_context, git_context_paths))
+            self._event(task_id, "queued", f"User submitted directly to {model}; triage skipped")
+            self.db.commit()
+        return task_id
+
     def get(self, task_id: str) -> dict[str, Any] | None:
         with self.lock:
             row = self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -179,6 +197,18 @@ class TaskStore:
             self._write_update(task_id, "queued", "User continued the approved conversation",
                                {"review_response": "", "error": ""})
             return True
+
+    def retry_blocked_direct(self, task_id: str, model: str) -> bool:
+        """Skip failed triage for an explicitly user-selected direct retry."""
+        task = self.get(task_id)
+        if not task or task["state"] != "blocked" or not model.strip():
+            return False
+        if task["assigned_model"] or task["suggested_model"] or task["complexity"] is not None:
+            return False
+        reason = f"User routed the blocked prompt directly to {model}; failed triage was skipped."
+        return self.update_if_state(task_id, {"blocked"}, "queued", reason,
+                                    assigned_model=model, suggested_model=model,
+                                    routing_reason=reason, error="", review_response="")
 
     def update(self, task_id: str, state: str, detail: str, **fields: Any) -> None:
         if state not in STATES:

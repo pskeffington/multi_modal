@@ -45,7 +45,7 @@ Install a per-user Linux desktop launcher:
 sh scripts/install-user.sh
 ```
 
-Qwen handles triage and is the default task model. GLM is available for user-confirmed escalation and may take much longer. Inference is serialized. Codex review is a copy/paste handoff; the app does not launch Codex CLI.
+Qwen handles triage and is the default task model. Triage requests schema-constrained JSON from llama.cpp, with validated repair and a direct-Qwen recovery action if the router returns an invalid schema. New prompts can also be sent directly to Qwen when the user chooses to skip triage. GLM is available for user-confirmed escalation and may take much longer. Inference is serialized. Codex review is a copy/paste handoff; the app does not launch Codex CLI.
 
 The desktop uses a conversation workspace with task history in a left sidebar, persisted user/model turns in the main pane, and a bottom composer. Press Enter to submit and Shift+Enter for a new line. After Codex approval, continue the selected conversation; follow-ups retain prior turns and use the same assigned model. Tool options for web research and Git context are grouped under the composer. If llama.cpp is offline, use **Start local router** in the GUI to start the configured `llama-router.service` from the active desktop user's systemd session.
 

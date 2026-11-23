@@ -50,12 +50,15 @@ class LocalClientHttpTests(unittest.TestCase):
         with self.mock_transport():
             catalog = self.client.model_catalog()
             self.assertEqual(catalog, [{"id": QWEN + ":Q4_K_M", "status": "available"}])
-            answer = self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2)
+            response_format = {"type": "json_object", "schema": {"type": "object"}}
+            answer = self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2,
+                                     response_format=response_format)
         self.assertEqual(answer, "Loopback answer.")
         post = next(payload for path, payload in self.requests if path == "/v1/chat/completions")
         self.assertEqual(post["model"], QWEN + ":Q4_K_M")
         self.assertEqual(post["messages"][-1]["content"], "Hi")
         self.assertFalse(post["stream"])
+        self.assertEqual(post["response_format"], response_format)
 
     def test_wrong_host_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
