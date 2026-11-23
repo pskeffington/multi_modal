@@ -3,8 +3,8 @@
 ## Baseline and scope
 
 - Repository: `multi_modal`
-- Source commit: `b981331da303a57bd9cfe1185c1736b76655ebb2`
-- Observed: `2026-11-23 05:07 UTC`
+- Source commit: `be3b89f` (full hash recorded in Git history)
+- Observed: `2026-11-23 05:08 UTC`
 - QA scope: prompt routing and validation, persisted multi-turn conversation, response lifecycle, revision context, llama.cpp client contract, Qwen live prompt quality, and GTK prompt workflow.
 
 ## Results
@@ -19,7 +19,7 @@
 | Rendered GUI inspection | BLOCKED | `scripts/launch.sh` reports no active display. GTK initializes, but `Gdk.Display.get_default()` is `None`; visual layout and keyboard interaction were not observed. |
 | GPU-backed inference | BLOCKED | This execution environment exposes neither `/dev/dri` nor `/dev/kfd`, and llama.cpp lists no available devices here. No CPU fallback was used. |
 
-The prompt-recovery change is committed on `main` as `68183fa` (with installer executable permission preserved in follow-up `b981331`). The latest direct probe to `http://127.0.0.1:9931/v1/models` failed with curl exit 7 (`Could not connect to server`), so no live Qwen response was available in this shell.
+The prompt-recovery change and GUI layout refinement are committed on `main` as `be3b89f`; installer executable permission is preserved. The latest direct probe to `http://127.0.0.1:9931/v1/models` failed with curl exit 7 (`Could not connect to server`), so no live Qwen response was available in this shell.
 
 ## Interpretation
 
