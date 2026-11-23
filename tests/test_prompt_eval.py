@@ -2,16 +2,103 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from prompt_qa import CASES, SYSTEM, check_answer, checks_passed, evaluate_case
-from multi_modal.worker import TASK_ASSISTANT_SYSTEM
+from prompt_qa import (CASES, SYSTEM, check_answer, checks_passed,
+                       evaluate_case, evaluate_persisted_conversation, evaluate_triage)
+from multi_modal.client import QWEN, LocalModelError
+from multi_modal.worker import TASK_ASSISTANT_SYSTEM, TRIAGE_RESPONSE_FORMAT
+import prompt_qa as prompt_qa_module
 
 
 class PromptEvalRubricTests(unittest.TestCase):
+    def test_cli_emits_machine_readable_partial_report_when_router_is_offline(self) -> None:
+        class OfflineClient:
+            def model_catalog(self) -> list[dict[str, str]]:
+                raise LocalModelError("router offline")
+
+        output = io.StringIO()
+        with patch.object(prompt_qa_module, "LocalClient", OfflineClient), contextlib.redirect_stdout(output):
+            code = prompt_qa_module.main()
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(report["execution_status"], "BLOCKED")
+        self.assertEqual(report["automated_summary"]["total"], len(CASES) + 2)
+        self.assertEqual(report["automated_summary"]["completed"], 0)
+
+    def test_live_triage_uses_production_schema_and_checks_route(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.response_format = None
+                self.messages = None
+
+            def chat(self, model: str, messages: list[dict], timeout: float,
+                     response_format: dict | None = None, max_tokens: int = 2048) -> str:
+                self.response_format = response_format
+                self.max_tokens = max_tokens
+                self.messages = list(messages)
+                return '{"task_type":"question","complexity":1,"priority":50,"risk":"low","confidence":0.9,"rationale":"A basic Linux question.","model":"Qwen"}'
+
+        client = RecordingClient()
+        result = evaluate_triage(client)
+        self.assertEqual(result["automated_status"], "PASS")
+        self.assertEqual(client.response_format, TRIAGE_RESPONSE_FORMAT)
+        self.assertEqual(client.max_tokens, 512)
+        self.assertEqual(client.messages[0]["content"].split()[0], "You")
+        self.assertEqual(result["normalized"]["assigned_model"], QWEN)
+
+    def test_live_triage_uses_production_single_repair_attempt(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def chat(self, model: str, messages: list[dict], timeout: float,
+                     response_format: dict | None = None, max_tokens: int = 2048) -> str:
+                self.calls.append((list(messages), response_format, max_tokens))
+                return ("not JSON" if len(self.calls) == 1 else
+                        '{"task_type":"question","complexity":1,"priority":50,"risk":"low","confidence":0.9,"rationale":"A basic Linux question.","model":"Qwen"}')
+
+        client = RecordingClient()
+        result = evaluate_triage(client)
+        self.assertEqual(result["automated_status"], "PASS")
+        self.assertEqual(result["attempt_count"], 2)
+        self.assertEqual(len(client.calls), 2)
+        self.assertTrue(all(call[1] == TRIAGE_RESPONSE_FORMAT for call in client.calls))
+        self.assertIn("not valid JSON", client.calls[1][0][-1]["content"])
+
+    def test_live_triage_reports_router_unavailable_as_blocked(self) -> None:
+        class OfflineClient:
+            def chat(self, model: str, messages: list[dict], timeout: float,
+                     response_format: dict | None = None, max_tokens: int = 2048) -> str:
+                raise LocalModelError("router offline")
+
+        result = evaluate_triage(OfflineClient())
+        self.assertEqual(result["automated_status"], "BLOCKED")
+        self.assertIn("router offline", result["error"])
+
+    def test_full_system_live_workflow_persists_reviewed_follow_up(self) -> None:
+        class ScriptedClient:
+            def __init__(self) -> None:
+                self.responses = [
+                    "19 × 23 = (19 × 20) + (19 × 3) = 380 + 57 = 437.",
+                    "The earlier calculation gives 437 because 380 + 57 equals 437.",
+                ]
+
+            def chat(self, model: str, messages: list[dict], timeout: float,
+                     response_format: dict | None = None, max_tokens: int = 2048) -> str:
+                return self.responses.pop(0)
+
+        result = evaluate_persisted_conversation(ScriptedClient(), wait_timeout=3)
+        self.assertEqual(result["automated_status"], "PASS")
+        self.assertTrue(all(result["automated_checks"].values()))
+
     def test_live_suite_uses_production_assistant_system_prompt(self) -> None:
         self.assertEqual(SYSTEM, TASK_ASSISTANT_SYSTEM)
         self.assertIn("You have no filesystem or command access", SYSTEM)
@@ -22,7 +109,8 @@ class PromptEvalRubricTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls = []
 
-            def chat(self, model: str, messages: list[dict], timeout: float) -> str:
+            def chat(self, model: str, messages: list[dict], timeout: float,
+                     response_format: dict | None = None, max_tokens: int = 2048) -> str:
                 self.calls.append((model, list(messages), timeout))
                 return ("A stack is last in, first out." if len(self.calls) == 1
                         else "items.append('x') pushes an item; items.pop() removes it.")

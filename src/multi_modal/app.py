@@ -6,6 +6,7 @@ import fcntl
 import json
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -444,10 +445,43 @@ class RouterWindow(Gtk.ApplicationWindow):
 
     def _prompt_qa_worker(self, command: list[str]) -> None:
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=1800, check=False)
-            GLib.idle_add(self._prompt_qa_finished, result.returncode, result.stdout, result.stderr)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            stderr_lines: list[str] = []
+            with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as report_file:
+                process = subprocess.Popen(command, stdout=report_file, stderr=subprocess.PIPE,
+                                           text=True, bufsize=1)
+                expired = threading.Event()
+
+                def stop_after_limit() -> None:
+                    expired.set()
+                    if process.poll() is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+
+                timer = threading.Timer(1800, stop_after_limit)
+                timer.start()
+                assert process.stderr is not None
+                for line in process.stderr:
+                    if line.startswith("QA_PROGRESS "):
+                        GLib.idle_add(self._prompt_qa_progress, line.strip())
+                    else:
+                        stderr_lines.append(line)
+                returncode = process.wait()
+                process.stderr.close()
+                timer.cancel()
+                report_file.seek(0)
+                stdout = report_file.read()
+            if expired.is_set():
+                GLib.idle_add(self._prompt_qa_finished, 2, "", "Prompt QA exceeded the 30 minute limit.")
+            else:
+                GLib.idle_add(self._prompt_qa_finished, returncode, stdout, "".join(stderr_lines))
+        except OSError as exc:
             GLib.idle_add(self._prompt_qa_finished, 2, "", f"Prompt QA could not finish: {exc}")
+
+    def _prompt_qa_progress(self, detail: str) -> bool:
+        self.status.set_text("Live Qwen prompt QA · " + detail.removeprefix("QA_PROGRESS "))
+        return False
 
     def _prompt_qa_finished(self, returncode: int, stdout: str, stderr: str) -> bool:
         self.prompt_qa_running = False
@@ -456,11 +490,18 @@ class RouterWindow(Gtk.ApplicationWindow):
             try:
                 report = json.loads(stdout)
                 summary = report.get("automated_summary", {})
-                self.status.set_text(
-                    f"Prompt QA finished: {summary.get('passed', 0)}/{summary.get('total', 0)} automated checks passed; manual review is required."
-                    if returncode == 0 else
-                    f"Prompt QA finished with failing checks (exit {returncode}); inspect the report and manual criteria."
-                )
+                if returncode == 2 or report.get("execution_status") == "BLOCKED":
+                    self.status.set_text(
+                        f"Prompt QA blocked after {summary.get('completed', 0)}/{summary.get('total', 0)} cases; inspect the partial report."
+                    )
+                elif returncode == 0:
+                    self.status.set_text(
+                        f"Prompt QA finished: {summary.get('passed', 0)}/{summary.get('total', 0)} automated checks passed; manual review is required."
+                    )
+                else:
+                    self.status.set_text(
+                        f"Prompt QA finished with failing checks (exit {returncode}); inspect the report and manual criteria."
+                    )
                 self._show_prompt_qa_report(json.dumps(report, ensure_ascii=False, indent=2))
                 return False
             except (json.JSONDecodeError, AttributeError):

@@ -52,13 +52,20 @@ class LocalClientHttpTests(unittest.TestCase):
             self.assertEqual(catalog, [{"id": QWEN + ":Q4_K_M", "status": "available"}])
             response_format = {"type": "json_object", "schema": {"type": "object"}}
             answer = self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2,
-                                     response_format=response_format)
+                                     response_format=response_format, max_tokens=512)
         self.assertEqual(answer, "Loopback answer.")
         post = next(payload for path, payload in self.requests if path == "/v1/chat/completions")
         self.assertEqual(post["model"], QWEN + ":Q4_K_M")
         self.assertEqual(post["messages"][-1]["content"], "Hi")
         self.assertFalse(post["stream"])
         self.assertEqual(post["response_format"], response_format)
+        self.assertEqual(post["max_tokens"], 512)
+
+    def test_invalid_max_tokens_is_rejected(self) -> None:
+        for value in (0, -1, True, 1.5):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2,
+                                 max_tokens=value)
 
     def test_wrong_host_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

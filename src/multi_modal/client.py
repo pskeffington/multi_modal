@@ -67,7 +67,9 @@ class LocalClient:
         return [item["id"] for item in self.model_catalog()]
 
     def chat(self, model: str, messages: list[dict], timeout: float,
-             response_format: dict | None = None) -> str:
+             response_format: dict | None = None, max_tokens: int = 2048) -> str:
+        if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens < 1:
+            raise ValueError("max_tokens must be a positive integer")
         available = self.models()
         resolved = resolve_model_id(model, available)
         if not resolved:
@@ -77,7 +79,7 @@ class LocalClient:
             )
         payload = {
             "model": resolved, "messages": messages, "temperature": 0.1,
-            "stream": False, "max_tokens": 2048,
+            "stream": False, "max_tokens": max_tokens,
         }
         if response_format is not None:
             payload["response_format"] = response_format

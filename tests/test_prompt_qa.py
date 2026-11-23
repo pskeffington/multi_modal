@@ -26,13 +26,13 @@ def triage(*, complexity: int = 1, priority: int = 50, risk: str = "low",
 class ScriptedClient:
     def __init__(self, responses: list[str | Exception]):
         self.responses = list(responses)
-        self.calls: list[tuple[str, list[dict], float, dict | None]] = []
+        self.calls: list[tuple[str, list[dict], float, dict | None, int]] = []
         self.lock = threading.Lock()
 
     def chat(self, model: str, messages: list[dict], timeout: float,
-             response_format: dict | None = None) -> str:
+             response_format: dict | None = None, max_tokens: int = 2048) -> str:
         with self.lock:
-            self.calls.append((model, messages, timeout, response_format))
+            self.calls.append((model, messages, timeout, response_format, max_tokens))
             response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -98,6 +98,7 @@ class PromptWorkflowTests(unittest.TestCase):
         self.assertIn("Codex review request", task["review_packet"])
         self.assertEqual([call[0] for call in client.calls], [QWEN, QWEN])
         self.assertEqual(client.calls[0][3], TRIAGE_RESPONSE_FORMAT)
+        self.assertEqual(client.calls[0][4], 512)
         self.assertIsNone(client.calls[1][3])
 
     def test_direct_qwen_task_skips_triage_but_enters_review(self) -> None:
@@ -123,6 +124,8 @@ class PromptWorkflowTests(unittest.TestCase):
         self.assertEqual(self.store.get(task_id)["state"], "review_pending")
         self.assertEqual(len(client.calls), 3)
         self.assertEqual(client.calls[0][3], TRIAGE_RESPONSE_FORMAT)
+        self.assertEqual(client.calls[0][4], 512)
+        self.assertEqual(client.calls[1][4], 512)
         self.assertIsNone(client.calls[1][3])
 
     def test_invalid_json_gets_one_repair_attempt(self) -> None:
@@ -132,6 +135,8 @@ class PromptWorkflowTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 3)
         self.assertEqual(client.calls[0][3], TRIAGE_RESPONSE_FORMAT)
         self.assertEqual(client.calls[1][3], TRIAGE_RESPONSE_FORMAT)
+        self.assertEqual(client.calls[0][4], 512)
+        self.assertEqual(client.calls[1][4], 512)
         repair = client.calls[1][1][-1]["content"]
         self.assertIn("not valid JSON", repair)
 
@@ -290,6 +295,20 @@ class PromptWorkflowTests(unittest.TestCase):
         data["confidence"] = float("nan")
         with self.assertRaises(ValueError):
             validate_triage(data)
+
+    def test_triage_validation_rejects_missing_extra_and_invalid_schema_fields(self) -> None:
+        incomplete = json.loads(triage())
+        incomplete.pop("model")
+        with self.assertRaisesRegex(ValueError, "missing required field: model"):
+            validate_triage(incomplete)
+        extra = json.loads(triage())
+        extra["commentary"] = "prose"
+        with self.assertRaisesRegex(ValueError, "unexpected field: commentary"):
+            validate_triage(extra)
+        invalid_model = json.loads(triage())
+        invalid_model["model"] = "Unknown"
+        with self.assertRaisesRegex(ValueError, "model must be Qwen or GLM"):
+            validate_triage(invalid_model)
         data = json.loads(triage())
         data["complexity"] = True
         with self.assertRaises(ValueError):
