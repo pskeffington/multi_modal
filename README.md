@@ -28,9 +28,12 @@ make build        # Compile the application modules
 make check        # Compile, check shell syntax, and validate the installed desktop entry when available
 make run          # Start the desktop application
 make install-user # Install a per-user desktop launcher
+make install-gpu-optimizer # Install the GPU optimizer executable and desktop icon
 ```
 
 `make check` writes its temporary launcher under a fresh temporary directory and removes it when validation finishes. It does not touch the user's application data.
+
+The **Multi Modal GPU Optimizer** desktop icon runs GPU-only llama.cpp benchmarks across context and batch settings, then saves a private report under `$XDG_STATE_HOME/multi_modal/gpu-optimizer` (default `~/.local/state/multi_modal/gpu-optimizer`). Set `MULTI_MODAL_GPU_MODEL` to a local GGUF file, or provide `--model` when running `multi-modal-gpu-optimize`. The optimizer requires a hardware GPU device exposed by llama.cpp, rejects software Vulkan/CPU devices, and does not download models or fall back to CPU. It recommends benchmark settings; it does not fine-tune model weights or rewrite router configuration.
 
 Install a per-user Linux desktop launcher:
 

@@ -7,6 +7,13 @@
 - Optional environment overrides adapt the deployment without code edits: `MULTI_MODAL_ROUTER_URL` (must remain loopback HTTP), `MULTI_MODAL_QWEN_MODEL`, and `MULTI_MODAL_GLM_MODEL`.
 - App data lives under `$XDG_DATA_HOME/multi_modal` or `~/.local/share/multi_modal`, with a private SQLite task journal.
 
+## GPU optimization launcher
+
+- Run `make install-gpu-optimizer` to install `multi-modal-gpu-optimize`, an application-menu entry, and a desktop icon. The icon opens a terminal so benchmark progress and GPU access blockers remain visible.
+- Set `MULTI_MODAL_GPU_MODEL` to a local Qwen `.gguf` file, or launch `multi-modal-gpu-optimize --model /path/to/model.gguf`. Set `MULTI_MODAL_LLAMA_BENCH` if `llama-bench` is not on `PATH` or under `~/.local/lib/llama.cpp`.
+- The optimizer requires llama.cpp to enumerate a hardware GPU and passes that exact device with 99 GPU layers and host offload disabled. It rejects CPU and software-renderer devices. It saves per-run measurements and a best tested configuration under `$XDG_STATE_HOME/multi_modal/gpu-optimizer`; no task prompts, outputs, or repo context are read or uploaded.
+- It benchmarks prompt and generation throughput for context/batch combinations and saves a recommendation only. Apply settings to the model server manually after reviewing the report. No weights are fine-tuned and no server configuration is changed automatically.
+
 ## Task flow
 
 1. Enter a task and submit it. Qwen returns complexity (1–5), priority (0–100), risk, confidence, rationale, and a suggested model. JSON extraction tolerates surrounding prose or code fences, while scores and risk must pass schema checks.
