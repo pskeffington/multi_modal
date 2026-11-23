@@ -3,7 +3,7 @@
 ## Baseline and scope
 
 - Repository: `multi_modal`
-- Source commit: `11fcaac16a8aa984ed5341facd1f00ac918daa14` (published to `main`; production-budget alignment is pending commit)
+- Source commit: `8f79252ebed8649445d53356301daaadb71717aa` (published to `main`)
 - Observed: `2026-11-23 06:04 UTC`
 - QA scope: prompt routing and validation, persisted multi-turn conversation, response lifecycle, revision context, llama.cpp client contract, Qwen live prompt quality, and GTK prompt workflow.
 
@@ -21,7 +21,7 @@
 | Rendered GUI inspection | BLOCKED | `scripts/launch.sh` reports no active display. GTK initializes, but `Gdk.Display.get_default()` is `None`; visual layout and keyboard interaction were not observed. |
 | GPU-backed inference | BLOCKED | This execution environment exposes neither `/dev/dri` nor `/dev/kfd`, and llama.cpp lists no available devices here. No CPU fallback was used. |
 
-The prompt-recovery change, GUI layout refinement, and in-GUI QA runner are committed and pushed to `main` at `956514a830f94cdfd8975406add7b21cd43ad0b3`; report auto-save and empty-generation diagnostics are committed and pushed at `5fcf8134b60ea6aec11cb6f3399e929a1c5b6c95`; rubric alignment and static Python syntax checks are committed and pushed at `94fd197a0e6beed6bfe659c32fceee9f8abf2105`; timestamped report archives and the GUI folder shortcut are committed and pushed at `b41793253740f4fc855d2c8ff3bf1063e0f02047`; production-budget alignment is pending commit; installer executable permission is preserved. The user-provided earlier-run report is direct live-answer evidence and shows material Qwen failures, but its old schema omits server completion metadata. The user reports a new run has started, but no saved report from that run is present under the default state directory or elsewhere under the home directory. The latest direct probe to `http://127.0.0.1:9931/v1/models` failed with curl exit 7 (`Could not connect to server`), and GTK returned no default display when probed against the discovered Wayland socket, so the new run and rendered GUI remain unverified in this shell. The user reports that the desktop GUI shows the router online.
+The prompt-recovery change, GUI layout refinement, and in-GUI QA runner are committed and pushed to `main` at `956514a830f94cdfd8975406add7b21cd43ad0b3`; report auto-save and empty-generation diagnostics are committed and pushed at `5fcf8134b60ea6aec11cb6f3399e929a1c5b6c95`; rubric alignment and static Python syntax checks are committed and pushed at `94fd197a0e6beed6bfe659c32fceee9f8abf2105`; timestamped report archives and the GUI folder shortcut are committed and pushed at `b41793253740f4fc855d2c8ff3bf1063e0f02047`; production-budget alignment is committed and pushed at `8f79252ebed8649445d53356301daaadb71717aa`; installer executable permission is preserved. The user-provided earlier-run report is direct live-answer evidence and shows material Qwen failures, but its old schema omits server completion metadata. The user reports a new run has started, but no saved report from that run is present under the default state directory or elsewhere under the home directory. The latest direct probe to `http://127.0.0.1:9931/v1/models` failed with curl exit 7 (`Could not connect to server`), and GTK returned no default display when probed against the discovered Wayland socket, so the new run and rendered GUI remain unverified in this shell. The user reports that the desktop GUI shows the router online.
 
 ## Interpretation
 
