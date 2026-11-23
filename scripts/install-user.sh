@@ -11,7 +11,7 @@ Name=Multi Modal Task Router
 Comment=Queue tasks to local Qwen and GLM models
 Exec=/bin/sh "$APP_DIR_ESCAPED/scripts/launch.sh"
 Terminal=false
-Categories=Development;Utility;
+Categories=Utility;
 StartupNotify=true
 EOF
 chmod 0644 "$DESKTOP_DIR/multi-modal-router.desktop"

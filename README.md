@@ -19,6 +19,19 @@ Run from a checkout with GTK4/PyGObject available:
 sh scripts/launch.sh
 ```
 
+## Build and validate
+
+No Python packages are installed by the project. GTK4/PyGObject come from the Linux distribution, and the launcher runs the system Python so those bindings remain available.
+
+```sh
+make build        # Compile the application modules
+make check        # Compile, check shell syntax, and validate the installed desktop entry when available
+make run          # Start the desktop application
+make install-user # Install a per-user desktop launcher
+```
+
+`make check` writes its temporary launcher under a fresh temporary directory and removes it when validation finishes. It does not touch the user's application data.
+
 Install a per-user Linux desktop launcher:
 
 ```sh
