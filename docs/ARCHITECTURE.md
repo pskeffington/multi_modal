@@ -16,6 +16,12 @@ The app uses one background worker and a process lock. Queue ordering uses advis
 
 The worker calls an OpenAI-compatible llama.cpp API on loopback only. Qwen is the default triage and task model; GLM is an optional escalation. Triage must return bounded numeric scores and a risk category. The router accepts a GLM recommendation only at complexity 3 or higher and confidence 0.70 or higher; otherwise it keeps Qwen. High risk or confidence below 0.55 pauses for user input regardless of model recommendation. The reason for each assignment is stored and shown in task details. Model IDs and the router URL can be changed through documented environment variables. Generated responses are untrusted text. The worker has no arbitrary filesystem or command interface.
 
+The GUI refreshes the local model catalog at startup, on request, and periodically. It resolves an exact configured model ID or a unique quantized variant advertised by llama.cpp; ambiguous or absent IDs are reported and cannot be submitted for triage/assignment. Unloaded but configured models remain selectable because the router may load them on demand.
+
+## Web research boundary
+
+Web scraping is explicit and user initiated. After a confirmation showing the task query, the app searches DuckDuckGo's non-JavaScript HTML results and fetches at most three public HTTPS pages, with response-size and timeout limits and private-host/redirect checks. It displays extracted text with title and domain attribution, omitting URLs. Results remain outside model tasks unless the user selects the include checkbox; if included, they are labeled untrusted and sent only to the configured loopback model. Model output, task history, Git context, and settings are never sent to web search.
+
 ## Review boundary
 
 Every completion or blocker produces a local review packet with the request, score, assignment, and model response. The user copies it to Codex and pastes the result back. Requested changes return to the same assigned model. The application does not start Codex CLI.

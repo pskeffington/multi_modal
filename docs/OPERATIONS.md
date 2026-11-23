@@ -23,6 +23,13 @@
 
 The task status line describes the next action for the selected state (triage, user decision, queue, inference, review, blocker recovery, or completion). Read that line alongside the event history when resuming older tasks.
 
+## Model readiness and web research
+
+- Use **Refresh models** in the header to check the configured Qwen and GLM IDs against the local router. A unique quantized model variant can satisfy a base configured ID; ambiguous or missing IDs are reported. Models shown as unloaded are configured for lazy loading.
+- For research, enter the task draft and choose **Research prompt on web**. Confirm the exact query preview to search DuckDuckGo's [non-JavaScript HTML results](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript) and scrape up to three public HTTPS pages. The app displays the extracted text with title and domain attribution and omits clickable URLs.
+- Select **Include scraped text in next local task** to pass the displayed material to the configured loopback model. If the draft changes after the search, results are marked stale and cannot be attached until a fresh search. Treat all scraped content as untrusted.
+- Only the confirmed query and requested public pages leave the app. Model outputs, Git context, task history, and settings remain local. The scraper enforces response size limits, timeouts, HTTPS, and public-address checks; sites may block automated requests, in which case available search snippets are shown.
+
 ## Git checkout workflow
 
 1. Before submitting a repository task, choose the Git checkout in the task composer. Optionally enter specific relative source paths and load them; the UI shows the exact UTF-8 snapshot that will be included in the local model request. Do not select secrets or files you do not want in the model context.

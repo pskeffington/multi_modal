@@ -3,7 +3,9 @@ multi-modal is a model selector based on tasking
 
 ## Local desktop task router
 
-This repository contains an open-source GTK4 desktop app for triaging tasks with local models, assigning them to model queues, and preparing a manual Codex review packet when a local model completes or blocks. Task data, source snapshots, and outputs stay in the user's XDG data directory. Model calls are loopback-only; generated commands are never executed.
+This repository contains an open-source GTK4 desktop app for triaging tasks with local models, assigning them to model queues, and preparing a manual Codex review packet when a local model completes or blocks. Task records, source snapshots, and outputs are stored in the user's XDG data directory. Model inference is loopback-only; a separate user-confirmed web research action can send only the visible draft query to web search. Generated commands are never executed.
+
+The GUI can also perform user-confirmed web research: it scrapes a bounded set of public result pages, displays extracted text with source-title/domain attribution (without clickable result links), and can attach the untrusted research text to the next local model task when selected.
 
 ## Requirements
 

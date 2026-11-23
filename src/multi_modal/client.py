@@ -17,6 +17,18 @@ class LocalModelError(RuntimeError):
     pass
 
 
+def resolve_model_id(configured: str, available: list[str]) -> str | None:
+    """Resolve a configured ID or a unique quantized variant advertised by the router."""
+    if configured in available:
+        return configured
+    folded = configured.casefold()
+    exact = [model for model in available if model.casefold() == folded]
+    if len(exact) == 1:
+        return exact[0]
+    variants = [model for model in available if model.casefold().startswith(folded + ":")]
+    return variants[0] if len(variants) == 1 else None
+
+
 class LocalClient:
     def __init__(self, base_url: str = DEFAULT_URL):
         parsed = urlsplit(base_url)
@@ -33,17 +45,37 @@ class LocalClient:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             raise LocalModelError(str(exc)) from exc
 
-    def models(self) -> list[str]:
+    def model_catalog(self) -> list[dict[str, str]]:
         try:
             data = self.request("/v1/models")
         except LocalModelError:
             data = self.request("/models")
-        entries = data if isinstance(data, list) else data.get("data", [])
-        return [str(item.get("id", "")) for item in entries if isinstance(item, dict) and item.get("id")]
+        entries = data if isinstance(data, list) else data.get("data") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            raise LocalModelError("The local router returned an invalid model catalog")
+        catalog = []
+        for item in entries:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            status = item.get("status", "")
+            if isinstance(status, dict):
+                status = status.get("value", "")
+            catalog.append({"id": str(item["id"]), "status": str(status or "available")})
+        return catalog
+
+    def models(self) -> list[str]:
+        return [item["id"] for item in self.model_catalog()]
 
     def chat(self, model: str, messages: list[dict], timeout: float) -> str:
+        available = self.models()
+        resolved = resolve_model_id(model, available)
+        if not resolved:
+            raise LocalModelError(
+                f"Configured model {model!r} is not uniquely advertised by the local router; "
+                "check the model ID or its environment override"
+            )
         data = self.request("/v1/chat/completions", {
-            "model": model, "messages": messages, "temperature": 0.1,
+            "model": resolved, "messages": messages, "temperature": 0.1,
             "stream": False, "max_tokens": 2048,
         }, timeout=timeout)
         try:
