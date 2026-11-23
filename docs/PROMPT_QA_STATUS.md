@@ -3,15 +3,15 @@
 ## Baseline and scope
 
 - Repository: `multi_modal`
-- Source commit: `cb387e73dd61b987ea5b7652f29f83cbb9f1ebcc`
-- Observed: `2026-11-23 05:14 UTC`
+- Source commit: `0e69cabd0750a8345693ed9edaac163356939b27`
+- Observed: `2026-11-23 05:17 UTC`
 - QA scope: prompt routing and validation, persisted multi-turn conversation, response lifecycle, revision context, llama.cpp client contract, Qwen live prompt quality, and GTK prompt workflow.
 
 ## Results
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Prompt/workflow contract suite | PASS | `make test`: 34 tests passed using scripted model replies. Includes constrained triage JSON, fallback when structured output is unsupported, direct Qwen recovery for an unrouted malformed-triage task, response lifecycle, revisions, approved follow-ups, desktop-router control, untrusted research/repository context, deterministic prompt-evaluation rubrics, and a check that the live follow-up sends Qwen's generated first answer as conversation history. |
+| Prompt/workflow contract suite | PASS | `make test`: 35 tests passed using scripted model replies. Includes constrained triage JSON, fallback when structured output is unsupported, direct Qwen recovery for an unrouted malformed-triage task, response lifecycle, revisions, approved follow-ups, desktop-router control, untrusted research/repository context, deterministic prompt-evaluation rubrics, a check that the live follow-up sends Qwen's generated first answer as conversation history, and a check that live QA uses the production assistant system prompt. |
 | Build and package checks | PASS | `make check`, `python3 -m py_compile scripts/prompt_qa.py`, and `git diff --check` completed with exit 0. |
 | Live Qwen prompt matrix | BLOCKED | `make prompt-qa` exited 2: local Qwen endpoint could not be reached (`Operation not permitted` from this execution environment). A separate probe to `127.0.0.1:9931` found no listening service. No model answers were generated or scored. The expanded 10-case matrix now includes a genuine two-turn exchange, per-case latency, and deterministic format checks; those live checks remain unrun. |
 | Start the local llama router | BLOCKED | `systemctl --user restart llama-router.service` could not connect to the user service bus (`Operation not permitted`). Prior host logs show the Qwen model had served requests, but that does not prove it is running now. |
