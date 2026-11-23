@@ -42,6 +42,9 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.selected_id: str | None = None
         self._refreshing = False
         self.rows: dict[str, Gtk.ListBoxRow] = {}
+        self.row_labels: dict[str, tuple[Gtk.Label, Gtk.Label]] = {}
+        self.row_signatures: dict[str, tuple[str, str, str]] = {}
+        self._detail_signature: tuple | None = None
         self.default_git_repo = ""
         self.default_git_context = ""
         self.default_git_context_paths = ""
@@ -272,6 +275,10 @@ class RouterWindow(Gtk.ApplicationWindow):
         root.append(compose)
         self.status = Gtk.Label(label="Ready", xalign=0)
         root.append(self.status)
+        for button in (self.copy_btn, self.approve_btn, self.changes_btn, self.validate_patch_btn,
+                       self.apply_patch_btn, self.assign_btn, self.retry_btn, self.retry_direct_btn):
+            button.set_sensitive(False)
+        self.model_choice.set_sensitive(False)
         self._refresh()
         GLib.timeout_add_seconds(2, self._refresh)
         GLib.timeout_add_seconds(45, self._periodic_health_check)
@@ -369,6 +376,7 @@ class RouterWindow(Gtk.ApplicationWindow):
 
     def _new_task(self, *_args) -> None:
         self.selected_id = None
+        self._detail_signature = None
         self.task_list.unselect_all()
         self.prompt.get_buffer().set_text("")
         self.web_research_context = ""
@@ -392,6 +400,12 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.changes_btn.set_sensitive(False)
         self.validate_patch_btn.set_sensitive(False)
         self.apply_patch_btn.set_sensitive(False)
+        self.model_choice.set_sensitive(False)
+        self.assign_btn.set_sensitive(False)
+        self.retry_btn.set_sensitive(False)
+        self.retry_direct_btn.set_sensitive(False)
+        self.assignment_help.set_text("Select a task to review its model assignment.")
+        self.git_task_info.set_text("Choose a checkout before submitting a task to enable Git patches.")
         self.submit_btn.set_label("Triage with Qwen")
         self.submit_btn.set_sensitive(True)
         self.direct_btn.set_sensitive(True)
@@ -732,7 +746,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.status.set_text("Direct Qwen request queued; automatic triage was skipped.")
 
     def _selection(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
-        if row is None:
+        if row is None or self._refreshing:
             return
         task_id = getattr(row, "task_id", None)
         if task_id:
@@ -745,28 +759,57 @@ class RouterWindow(Gtk.ApplicationWindow):
         self._refreshing = True
         try:
             tasks = self.store.all()
+            task_ids = {task["id"] for task in tasks}
+            for task_id in self.rows.keys() - task_ids:
+                self.task_list.remove(self.rows.pop(task_id))
+                self.row_labels.pop(task_id, None)
+                self.row_signatures.pop(task_id, None)
+
+            for task in tasks:
+                task_id = task["id"]
+                model = task["assigned_model"] or task["suggested_model"] or QWEN
+                prompt_title = task["prompt"].splitlines()[0][:64] or "Untitled task"
+                signature = (prompt_title, task["state"], model)
+                if task_id not in self.rows:
+                    row_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+                    label = Gtk.Label(label=prompt_title, xalign=0, wrap=True, ellipsize=3)
+                    label.add_css_class("heading")
+                    row_content.append(label)
+                    meta = Gtk.Label(label=f"{task['state']} · {model}", xalign=0, wrap=True)
+                    meta.add_css_class("dim-label")
+                    row_content.append(meta)
+                    row = Gtk.ListBoxRow(child=row_content)
+                    row.task_id = task_id
+                    self.rows[task_id] = row
+                    self.row_labels[task_id] = (label, meta)
+                    self.task_list.append(row)
+                if self.row_signatures.get(task_id) != signature:
+                    label, meta = self.row_labels[task_id]
+                    label.set_text(prompt_title)
+                    meta.set_text(f"{task['state']} · {model}")
+                    self.row_signatures[task_id] = signature
+
+            current_ids = []
             child = self.task_list.get_first_child()
             while child:
-                nxt = child.get_next_sibling()
-                self.task_list.remove(child)
-                child = nxt
-            self.rows.clear()
-            for task in tasks:
-                model = task["assigned_model"] or task["suggested_model"] or QWEN
-                row_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-                prompt_title = task["prompt"].splitlines()[0][:64] or "Untitled task"
-                label = Gtk.Label(label=prompt_title, xalign=0, wrap=True, ellipsize=3)
-                label.add_css_class("heading")
-                row_content.append(label)
-                meta = Gtk.Label(label=f"{task['state']} · {model}", xalign=0, wrap=True)
-                meta.add_css_class("dim-label")
-                row_content.append(meta)
-                row = Gtk.ListBoxRow(child=row_content)
-                row.task_id = task["id"]
-                self.task_list.append(row)
-                self.rows[task["id"]] = row
-                if task["id"] == self.selected_id:
-                    self.task_list.select_row(row)
+                current_ids.append(getattr(child, "task_id", ""))
+                child = child.get_next_sibling()
+            ordered_ids = [task["id"] for task in tasks]
+            if current_ids != ordered_ids:
+                child = self.task_list.get_first_child()
+                while child:
+                    nxt = child.get_next_sibling()
+                    self.task_list.remove(child)
+                    child = nxt
+                for task_id in ordered_ids:
+                    self.task_list.append(self.rows[task_id])
+
+            selected_row = self.task_list.get_selected_row()
+            if self.selected_id and self.selected_id in self.rows:
+                if getattr(selected_row, "task_id", None) != self.selected_id:
+                    self.task_list.select_row(self.rows[self.selected_id])
+            elif selected_row is not None:
+                self.task_list.unselect_all()
             if self.selected_id:
                 self._show_detail(self.store.get(self.selected_id))
         finally:
@@ -776,6 +819,16 @@ class RouterWindow(Gtk.ApplicationWindow):
     def _show_detail(self, task: dict | None) -> None:
         if not task:
             return
+        assigned = task["assigned_model"] or task["suggested_model"] or QWEN
+        resolved = self.resolved_models.get(assigned)
+        detail_signature = (
+            task["id"], task.get("updated"), task["state"], task["output"], task["error"],
+            task["review_packet"], task["review_response"], resolved,
+            self.model_states.get(resolved or ""), self.patch_validation,
+        )
+        if detail_signature == self._detail_signature:
+            return
+        self._detail_signature = detail_signature
         self.task_title.set_text(task["prompt"].splitlines()[0][:96] or f"Task {task['id']}")
         self.meta.set_text(f"Type: {task['task_type'] or 'pending'}   Complexity: {task['complexity'] or '—'}/5   Priority: {task['priority'] if task['priority'] is not None else '—'}/100\nRisk: {task['risk'] or '—'}   Confidence: {task['confidence'] if task['confidence'] is not None else '—'}   Suggested: {task['suggested_model'] or '—'}   Assigned: {task['assigned_model'] or '—'}")
         routing = task.get("routing_reason") or "Routing policy will be shown after triage."
