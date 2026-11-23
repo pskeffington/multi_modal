@@ -67,6 +67,20 @@ class LocalClientHttpTests(unittest.TestCase):
                 self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2,
                                  max_tokens=value)
 
+    def test_empty_final_answer_is_reported_with_safe_generation_metadata(self) -> None:
+        with self.mock_transport():
+            with patch("multi_modal.client.LocalClient.request", side_effect=[
+                {"data": [{"id": QWEN}]},
+                {"choices": [{"message": {"content": "", "reasoning_content": "private reasoning"},
+                              "finish_reason": "length"}],
+                 "usage": {"completion_tokens": 768}},
+            ]):
+                with self.assertRaisesRegex(LocalModelError, "finish_reason=length") as raised:
+                    self.client.chat(QWEN, [{"role": "user", "content": "Hi"}], timeout=2)
+        self.assertIn("completion_tokens=768", str(raised.exception))
+        self.assertIn("reasoning_chars=17", str(raised.exception))
+        self.assertNotIn("private reasoning", str(raised.exception))
+
     def test_wrong_host_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             LocalClient("http://0.0.0.0:9931")

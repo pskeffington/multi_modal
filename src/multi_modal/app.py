@@ -18,6 +18,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk
 from .client import GLM, QWEN, LocalClient, LocalModelError, resolve_model_id
 from .git_workspace import GitWorkspaceError, apply_patch as apply_git_patch, extract_unified_diff, read_context, repository_root, validate_patch
 from .router_control import RouterControlError, start_user_router
+from .prompt_qa_reports import load_report, report_path, save_report
 from .store import TaskStore, data_dir
 from .web_research import research as scrape_web
 from .worker import TaskWorker, retry_state_for_task
@@ -34,6 +35,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.health_check_lock = threading.Lock()
         self.router_starting = False
         self.prompt_qa_running = False
+        self.latest_prompt_qa_report = report_path()
         self._research_busy = False
         self._web_research_query = ""
         self.web_research_context = ""
@@ -78,6 +80,10 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.prompt_qa_btn.set_tooltip_text("Run the local Qwen prompt suite from this desktop session")
         self.prompt_qa_btn.connect("clicked", self._run_prompt_qa)
         header.append(self.prompt_qa_btn)
+        self.open_qa_btn = Gtk.Button(label="Open latest QA report")
+        self.open_qa_btn.set_tooltip_text(f"Open saved report: {self.latest_prompt_qa_report}")
+        self.open_qa_btn.connect("clicked", self._open_latest_prompt_qa)
+        header.append(self.open_qa_btn)
         root.append(header)
 
         compose = Gtk.Frame(label="Message")
@@ -489,6 +495,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         if stdout.strip():
             try:
                 report = json.loads(stdout)
+                report_path = self._save_prompt_qa_report(report)
                 summary = report.get("automated_summary", {})
                 if returncode == 2 or report.get("execution_status") == "BLOCKED":
                     self.status.set_text(
@@ -503,6 +510,8 @@ class RouterWindow(Gtk.ApplicationWindow):
                         f"Prompt QA finished with failing checks (exit {returncode}); inspect the report and manual criteria."
                     )
                 self._show_prompt_qa_report(json.dumps(report, ensure_ascii=False, indent=2))
+                if report_path:
+                    self.status.set_text(self.status.get_text() + f" · Saved: {report_path}")
                 return False
             except (json.JSONDecodeError, AttributeError):
                 pass
@@ -510,6 +519,21 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.status.set_text("Prompt QA could not run: " + detail[:500])
         self._show_prompt_qa_report(detail)
         return False
+
+    def _save_prompt_qa_report(self, report: dict) -> Path | None:
+        try:
+            return save_report(report, self.latest_prompt_qa_report)
+        except OSError as exc:
+            self.status.set_text(f"Prompt QA report could not be saved: {exc}")
+            return None
+
+    def _open_latest_prompt_qa(self, *_args) -> None:
+        try:
+            report = load_report(self.latest_prompt_qa_report)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.status.set_text(f"No readable saved prompt QA report: {exc}")
+            return
+        self._show_prompt_qa_report(report)
 
     def _show_prompt_qa_report(self, report: str) -> None:
         window = Gtk.Window(title="Live Qwen Prompt QA", transient_for=self, modal=True,

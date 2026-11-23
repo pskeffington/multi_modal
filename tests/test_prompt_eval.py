@@ -33,6 +33,27 @@ class PromptEvalRubricTests(unittest.TestCase):
         self.assertEqual(report["automated_summary"]["total"], len(CASES) + 2)
         self.assertEqual(report["automated_summary"]["completed"], 0)
 
+    def test_live_empty_completion_is_recorded_and_suite_continues(self) -> None:
+        class EmptyCompletionClient:
+            def model_catalog(self) -> list[dict[str, str]]:
+                return [{"id": QWEN, "status": "available"}]
+
+            def chat(self, model: str, messages: list[dict], timeout: float,
+                     response_format: dict | None = None, max_tokens: int = 2048) -> str:
+                raise LocalModelError("no final answer text (finish_reason=length)")
+
+        output = io.StringIO()
+        errors = io.StringIO()
+        with (patch.object(prompt_qa_module, "LocalClient", EmptyCompletionClient),
+              contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors)):
+            code = prompt_qa_module.main()
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(report["automated_summary"]["total"], len(CASES) + 2)
+        self.assertEqual(report["automated_summary"]["completed"], len(CASES) + 2)
+        self.assertEqual(report["automated_summary"]["blocked"], len(CASES) + 2)
+        self.assertEqual(len(report["case_errors"]), len(CASES))
+
     def test_live_triage_uses_production_schema_and_checks_route(self) -> None:
         class RecordingClient:
             def __init__(self) -> None:

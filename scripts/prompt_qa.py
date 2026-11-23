@@ -321,8 +321,7 @@ def main() -> int:
                                     "automated_checks": {"case_completed": False},
                                     "automated_status": "BLOCKED"})
             report["execution_status"] = "BLOCKED"
-            report["execution_error"] = str(exc)
-            break
+            report.setdefault("case_errors", []).append({"id": case_id, "error": str(exc)})
 
     passed = sum(case["automated_status"] == "PASS" for case in report["cases"])
     failed = sum(case["automated_status"] == "FAIL" for case in report["cases"])

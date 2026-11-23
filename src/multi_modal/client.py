@@ -85,6 +85,25 @@ class LocalClient:
             payload["response_format"] = response_format
         data = self.request("/v1/chat/completions", payload, timeout=timeout)
         try:
-            return str(data["choices"][0]["message"]["content"])
+            choice = data["choices"][0]
+            if not isinstance(choice, dict):
+                raise TypeError("choice must be an object")
+            message = choice["message"]
+            if not isinstance(message, dict):
+                raise TypeError("message must be an object")
+            content = message.get("content")
         except (KeyError, IndexError, TypeError) as exc:
             raise LocalModelError("The local server returned an unexpected chat response") from exc
+        if not isinstance(content, str) or not content.strip():
+            finish_reason = choice.get("finish_reason", "unknown")
+            usage = data.get("usage", {})
+            completion_tokens = usage.get("completion_tokens", "unknown") if isinstance(usage, dict) else "unknown"
+            reasoning = message.get("reasoning_content", "")
+            reasoning_chars = len(reasoning) if isinstance(reasoning, str) else 0
+            raise LocalModelError(
+                "The local server returned no final answer text "
+                f"(finish_reason={finish_reason}, completion_tokens={completion_tokens}, "
+                f"reasoning_chars={reasoning_chars}). The model may have used its completion budget "
+                "without producing a user-facing answer."
+            )
+        return content
