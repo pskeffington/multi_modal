@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: build check test run install-user install-gpu-optimizer
+.PHONY: build check test prompt-qa run install-user install-gpu-optimizer
 
 build:
 	$(PYTHON) -m compileall -q src
@@ -23,6 +23,9 @@ check: build
 
 test:
 	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests -v
+
+prompt-qa:
+	$(PYTHON) scripts/prompt_qa.py
 
 run:
 	sh scripts/launch.sh

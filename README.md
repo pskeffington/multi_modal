@@ -29,6 +29,7 @@ No Python packages are installed by the project. GTK4/PyGObject come from the Li
 make build        # Compile the application modules
 make check        # Compile, check shell syntax, and validate the installed desktop entry when available
 make test         # Run prompt lifecycle, local API contract, and GTK compatibility checks
+make prompt-qa    # Send the sample prompt suite to the configured local Qwen and print a review report
 make run          # Start the desktop application
 make install-user # Install a per-user desktop launcher
 make install-gpu-optimizer # Install the GPU optimizer executable and desktop icon
