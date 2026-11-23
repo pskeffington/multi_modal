@@ -7,10 +7,30 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from prompt_qa import CASES, check_answer, checks_passed
+from prompt_qa import CASES, check_answer, checks_passed, evaluate_case
 
 
 class PromptEvalRubricTests(unittest.TestCase):
+    def test_live_follow_up_uses_first_generated_answer_as_context(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def chat(self, model: str, messages: list[dict], timeout: float) -> str:
+                self.calls.append((model, list(messages), timeout))
+                return ("A stack is last in, first out." if len(self.calls) == 1
+                        else "items.append('x') pushes an item; items.pop() removes it.")
+
+        client = RecordingClient()
+        case = next(case for case in CASES if case["id"] == "multi-turn-follow-up")
+        result = evaluate_case(client, case)
+        self.assertEqual(result["automated_status"], "PASS")
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[1][1][-2], {
+            "role": "assistant", "content": "A stack is last in, first out.",
+        })
+        self.assertEqual(result["answers"][0], "A stack is last in, first out.")
+
     def test_arithmetic_rubric_detects_wrong_result(self) -> None:
         result = check_answer("19 × 23 = 437.", {"contains": ["437"]})
         self.assertTrue(result["contains"]["437"])

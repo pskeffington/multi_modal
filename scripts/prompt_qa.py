@@ -154,6 +154,28 @@ def checks_passed(checks: dict) -> bool:
     return True
 
 
+def evaluate_case(client: LocalClient, case: dict) -> dict:
+    """Run one case while preserving generated turns as actual conversation history."""
+    started = time.monotonic()
+    answers = []
+    if "turns" in case:
+        history = [{"role": "system", "content": SYSTEM}]
+        for turn in case["turns"]:
+            history.append({"role": "user", "content": turn["user"]})
+            answer = client.chat(QWEN, history, timeout=300)
+            answers.append(answer)
+            history.append({"role": "assistant", "content": answer})
+    else:
+        answer = client.chat(QWEN, [{"role": "system", "content": SYSTEM}, *case["messages"]], timeout=300)
+        answers.append(answer)
+    automated = check_answer(answers[-1], case["checks"])
+    return {"id": case["id"], "answers": answers,
+            "latency_seconds": round(time.monotonic() - started, 3),
+            "automated_checks": automated,
+            "automated_status": "PASS" if checks_passed(automated) else "FAIL",
+            "manual_review_criteria": case["review"]}
+
+
 def main() -> int:
     try:
         client = LocalClient()
@@ -165,24 +187,7 @@ def main() -> int:
         report = {"started_at": datetime.now(timezone.utc).isoformat(), "configured_model": QWEN,
                   "resolved_model": resolved, "cases": []}
         for case in CASES:
-            started = time.monotonic()
-            answers = []
-            if "turns" in case:
-                history = [{"role": "system", "content": SYSTEM}]
-                for turn in case["turns"]:
-                    history.append({"role": "user", "content": turn["user"]})
-                    answer = client.chat(QWEN, history, timeout=300)
-                    answers.append(answer)
-                    history.append({"role": "assistant", "content": answer})
-            else:
-                answer = client.chat(QWEN, [{"role": "system", "content": SYSTEM}, *case["messages"]], timeout=300)
-                answers.append(answer)
-            automated = check_answer(answers[-1], case["checks"])
-            report["cases"].append({"id": case["id"], "answers": answers,
-                                    "latency_seconds": round(time.monotonic() - started, 3),
-                                    "automated_checks": automated,
-                                    "automated_status": "PASS" if checks_passed(automated) else "FAIL",
-                                    "manual_review_criteria": case["review"]})
+            report["cases"].append(evaluate_case(client, case))
     except (LocalModelError, ValueError, OSError) as exc:
         print(f"BLOCKED · Local Qwen prompt evaluation could not run: {exc}", file=sys.stderr)
         return 2
