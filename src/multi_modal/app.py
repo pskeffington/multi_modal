@@ -11,11 +11,11 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
-from .client import DEFAULT_URL, GLM, QWEN, LocalClient, LocalModelError, resolve_model_id
+from .client import GLM, QWEN, LocalClient, LocalModelError, resolve_model_id
 from .git_workspace import GitWorkspaceError, apply_patch as apply_git_patch, extract_unified_diff, read_context, repository_root, validate_patch
 from .store import TaskStore, data_dir
 from .web_research import research as scrape_web
-from .worker import TaskWorker
+from .worker import TaskWorker, retry_state_for_task
 
 
 class RouterWindow(Gtk.ApplicationWindow):
@@ -41,15 +41,23 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.patch_value = ""
         self.patch_validation: tuple[str, str, str] | None = None
 
+        self._install_style()
+
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        root.set_margin_top(12); root.set_margin_bottom(12)
-        root.set_margin_start(14); root.set_margin_end(14)
+        root.add_css_class("app-shell")
+        root.set_margin_top(8); root.set_margin_bottom(8)
+        root.set_margin_start(8); root.set_margin_end(8)
         self.set_child(root)
 
-        header = Gtk.Box(spacing=10)
-        title = Gtk.Label(label="Local model task router", xalign=0)
-        title.add_css_class("title-1")
+        header = Gtk.Box(spacing=8)
+        header.add_css_class("topbar")
+        title = Gtk.Label(label="Multi Modal", xalign=0)
+        title.add_css_class("title-2")
         header.append(title)
+        new_task_btn = Gtk.Button(label="＋  New task")
+        new_task_btn.add_css_class("suggested-action")
+        new_task_btn.connect("clicked", self._new_task)
+        header.append(new_task_btn)
         self.health = Gtk.Label(label="Checking local router…", xalign=1)
         self.health.set_hexpand(True)
         header.append(self.health)
@@ -58,9 +66,8 @@ class RouterWindow(Gtk.ApplicationWindow):
         header.append(self.refresh_models_btn)
         root.append(header)
 
-        root.append(Gtk.Label(label=f"Loopback only: {DEFAULT_URL} · One inference at a time · Codex review is manual", xalign=0))
-
-        compose = Gtk.Frame(label="New task")
+        compose = Gtk.Frame(label="Message")
+        compose.add_css_class("composer")
         compose_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         compose_box.set_margin_top(8); compose_box.set_margin_bottom(8)
         compose_box.set_margin_start(8); compose_box.set_margin_end(8)
@@ -69,9 +76,15 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.prompt.set_size_request(-1, 90)
         self.prompt.get_buffer().set_text("")
         self.prompt.get_buffer().connect("changed", self._draft_changed)
+        prompt_keys = Gtk.EventControllerKey()
+        prompt_keys.connect("key-pressed", self._prompt_key_pressed)
+        self.prompt.add_controller(prompt_keys)
         prompt_scroll = Gtk.ScrolledWindow(min_content_height=88)
         prompt_scroll.set_child(self.prompt)
         compose_box.append(prompt_scroll)
+        tools_expander = Gtk.Expander(label="Tools · Web research and Git context")
+        tools_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        tools_expander.set_child(tools_box)
         web_row = Gtk.Box(spacing=8)
         self.research_btn = Gtk.Button(label="Research prompt on web")
         self.research_btn.connect("clicked", self._research_web)
@@ -79,11 +92,11 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.research_include = Gtk.CheckButton(label="Include scraped text in next local task")
         self.research_include.set_sensitive(False)
         web_row.append(self.research_include)
-        compose_box.append(web_row)
+        tools_box.append(web_row)
         self.research_status = Gtk.Label(
             label="Web search is user initiated. Query text is sent to DuckDuckGo; pages and extracted text stay in this app unless attached to a local task.",
             xalign=0, wrap=True)
-        compose_box.append(self.research_status)
+        tools_box.append(self.research_status)
         self.research_expander = Gtk.Expander(label="Scraped web research (untrusted; URLs omitted)")
         self.research_view = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self.research_view.set_size_request(-1, 120)
@@ -91,7 +104,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         research_scroll.set_child(self.research_view)
         self.research_expander.set_child(research_scroll)
         self.research_expander.set_visible(False)
-        compose_box.append(self.research_expander)
+        tools_box.append(self.research_expander)
         git_setup = Gtk.Box(spacing=8)
         self.choose_repo_btn = Gtk.Button(label="Choose Git checkout")
         self.choose_repo_btn.connect("clicked", self._choose_repo)
@@ -102,7 +115,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.repo_summary = Gtk.Label(label="No repository attached", xalign=0, ellipsize=3)
         self.repo_summary.set_hexpand(True)
         git_setup.append(self.repo_summary)
-        compose_box.append(git_setup)
+        tools_box.append(git_setup)
         context_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         context_row.append(Gtk.Label(label="Optional checkout-relative UTF-8 files, one path per line:", xalign=0))
         context_input_row = Gtk.Box(spacing=8)
@@ -116,44 +129,44 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.load_context_btn.connect("clicked", self._load_repo_context)
         context_input_row.append(self.load_context_btn)
         context_row.append(context_input_row)
-        compose_box.append(context_row)
+        tools_box.append(context_row)
         self.context_summary = Gtk.Label(label="Selected files are sent only to the local model endpoint.", xalign=0, wrap=True)
-        compose_box.append(self.context_summary)
+        tools_box.append(self.context_summary)
         self.context_expander = Gtk.Expander(label="Preview exact repository context sent with a new task")
         self.context_preview = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.NONE)
         context_scroll = Gtk.ScrolledWindow(min_content_height=100, max_content_height=160)
         context_scroll.set_child(self.context_preview)
         self.context_expander.set_child(context_scroll)
         self.context_expander.set_visible(False)
-        compose_box.append(self.context_expander)
+        tools_box.append(self.context_expander)
+        compose_box.append(tools_expander)
         submit_row = Gtk.Box(spacing=8)
-        self.submit_btn = Gtk.Button(label="Submit and triage with Qwen")
+        self.submit_btn = Gtk.Button(label="Send to Qwen")
         self.submit_btn.add_css_class("suggested-action")
         self.submit_btn.connect("clicked", self._submit)
         submit_row.append(self.submit_btn)
-        submit_row.append(Gtk.Label(label="Scores guide routing; confirm low-confidence triage below."))
+        submit_row.append(Gtk.Label(label="Enter to send · Shift+Enter for a new line · Codex review stays in your control", xalign=0))
         compose_box.append(submit_row)
-        root.append(compose)
 
         pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True)
+        pane.add_css_class("workspace")
         pane.set_vexpand(True)
         root.append(pane)
 
         queues = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        queues.set_size_request(385, -1)
+        queues.add_css_class("sidebar")
+        queues.set_size_request(270, -1)
         pane.set_start_child(queues)
         pane.set_resize_start_child(False)
         pane.set_shrink_start_child(False)
 
-        lanes = Gtk.Box(spacing=8)
-        queues.append(lanes)
-        self.qwen_list = self._make_lane(lanes, "Qwen queue")
-        self.glm_list = self._make_lane(lanes, "GLM queue")
-        queues.append(Gtk.Label(label="Select any task to inspect its score, response, and review history.", xalign=0, wrap=True))
+        self.task_list = self._make_lane(queues, "Tasks")
+        queues.append(Gtk.Label(label="Task status and model are shown under each prompt.", xalign=0, wrap=True))
 
         detail_scroll = Gtk.ScrolledWindow()
         pane.set_end_child(detail_scroll)
         detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        detail.add_css_class("conversation")
         detail.set_margin_start(14)
         detail_scroll.set_child(detail)
         self.task_title = Gtk.Label(label="Select a task", xalign=0)
@@ -163,6 +176,10 @@ class RouterWindow(Gtk.ApplicationWindow):
         detail.append(self.meta)
         self.rationale = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
         detail.append(self.rationale)
+        self.request = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
+        self.request.add_css_class("request-card")
+        detail.append(Gtk.Label(label="You", xalign=0))
+        detail.append(self.request)
         self.output = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self.output.set_size_request(-1, 170)
         out_scroll = Gtk.ScrolledWindow(min_content_height=165)
@@ -224,6 +241,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.history = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
         detail.append(self.history)
 
+        root.append(compose)
         self.status = Gtk.Label(label="Ready", xalign=0)
         root.append(self.status)
         self._refresh()
@@ -231,11 +249,43 @@ class RouterWindow(Gtk.ApplicationWindow):
         GLib.timeout_add_seconds(45, self._periodic_health_check)
         self._start_health_check()
 
+    def _install_style(self) -> None:
+        settings = Gtk.Settings.get_default()
+        if settings:
+            settings.set_property("gtk-application-prefer-dark-theme", True)
+        provider = Gtk.CssProvider()
+        provider.load_from_data(b"""
+            window { background: #212121; color: #ececec; }
+            .app-shell { background: #212121; }
+            .topbar { padding: 6px 8px; border-bottom: 1px solid #373737; }
+            .sidebar { background: #171717; padding: 10px; border-radius: 10px; }
+            .conversation { padding: 14px 18px; }
+            .request-card { background: #292929; border-radius: 10px; padding: 10px; }
+            .composer { background: #2b2b2b; border: 1px solid #454545; border-radius: 12px; padding: 8px; }
+            .composer textview { background: #2b2b2b; color: #f2f2f2; }
+            .sidebar list row { border-radius: 8px; padding: 8px; }
+            .sidebar list row:selected { background: #343434; }
+            button { min-height: 34px; }
+            .dim-label { color: #a7a7a7; }
+        """)
+        display = Gdk.Display.get_default()
+        if display:
+            Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._style_provider = provider
+
+    def _prompt_key_pressed(self, _controller, keyval: int, _keycode: int, state: Gdk.ModifierType) -> bool:
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not state & Gdk.ModifierType.SHIFT_MASK:
+            self._submit()
+            return True
+        return False
+
     def _make_lane(self, parent: Gtk.Box, title: str) -> Gtk.ListBox:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.set_hexpand(True)
-        box.append(Gtk.Label(label=title, xalign=0))
-        scroller = Gtk.ScrolledWindow(min_content_height=150, vexpand=True)
+        heading = Gtk.Label(label=title, xalign=0)
+        heading.add_css_class("heading")
+        box.append(heading)
+        scroller = Gtk.ScrolledWindow(min_content_height=200, vexpand=True)
         listing = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
         listing.connect("row-selected", self._selection)
         scroller.set_child(listing)
@@ -250,6 +300,33 @@ class RouterWindow(Gtk.ApplicationWindow):
     def _periodic_health_check(self) -> bool:
         self._start_health_check()
         return True
+
+    def _new_task(self, *_args) -> None:
+        self.selected_id = None
+        self.prompt.get_buffer().set_text("")
+        self.web_research_context = ""
+        self._web_research_query = ""
+        self.research_include.set_active(False)
+        self.research_include.set_sensitive(False)
+        self.research_expander.set_visible(False)
+        self.research_view.get_buffer().set_text("")
+        self.research_status.set_text("Web search is user initiated. Query text is sent to DuckDuckGo; pages and extracted text stay in this app unless attached to a task.")
+        self.review.get_buffer().set_text("")
+        self.task_title.set_text("New task")
+        self.meta.set_text("")
+        self.rationale.set_text("")
+        self.request.set_text("")
+        self.output.get_buffer().set_text("Your local model response will appear here.")
+        self.history.set_text("")
+        self.patch_status.set_text("No patch loaded")
+        self.patch_preview.get_buffer().set_text("")
+        self.status.set_text("Ready for a new prompt.")
+        self.copy_btn.set_sensitive(False)
+        self.approve_btn.set_sensitive(False)
+        self.changes_btn.set_sensitive(False)
+        self.validate_patch_btn.set_sensitive(False)
+        self.apply_patch_btn.set_sensitive(False)
+        self.prompt.grab_focus()
 
     def _check_health(self) -> None:
         if not self.health_check_lock.acquire(blocking=False):
@@ -311,7 +388,7 @@ class RouterWindow(Gtk.ApplicationWindow):
             transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
             buttons=Gtk.ButtonsType.OK_CANCEL, text="Search the web and scrape public result pages?",
         )
-        dialog.set_secondary_text(
+        dialog.set_property("secondary-text",
             "This sends the prompt text below to DuckDuckGo and requests up to three public HTTPS result pages. "
             "Extracted text will be shown here without clickable URLs. It is untrusted. Nothing is attached to a model task unless you leave the include checkbox enabled.\n\n"
             + query
@@ -413,23 +490,25 @@ class RouterWindow(Gtk.ApplicationWindow):
         self._refreshing = True
         try:
             tasks = self.store.all()
-            for listing in (self.qwen_list, self.glm_list):
-                child = listing.get_first_child()
-                while child:
-                    nxt = child.get_next_sibling()
-                    listing.remove(child)
-                    child = nxt
+            child = self.task_list.get_first_child()
+            while child:
+                nxt = child.get_next_sibling()
+                self.task_list.remove(child)
+                child = nxt
             self.rows.clear()
             for task in tasks:
                 model = task["assigned_model"] or task["suggested_model"] or QWEN
-                lane = self.glm_list if model == GLM else self.qwen_list
-                label_text = f"{task['id']} · {task['state']}"
-                if task["complexity"]:
-                    label_text += f" · C{task['complexity']} P{task['priority']}"
-                label = Gtk.Label(label=label_text, xalign=0, wrap=True)
-                row = Gtk.ListBoxRow(child=label)
+                row_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+                prompt_title = task["prompt"].splitlines()[0][:64] or "Untitled task"
+                label = Gtk.Label(label=prompt_title, xalign=0, wrap=True, ellipsize=3)
+                label.add_css_class("heading")
+                row_content.append(label)
+                meta = Gtk.Label(label=f"{task['state']} · {model}", xalign=0, wrap=True)
+                meta.add_css_class("dim-label")
+                row_content.append(meta)
+                row = Gtk.ListBoxRow(child=row_content)
                 row.task_id = task["id"]
-                lane.append(row)
+                self.task_list.append(row)
                 self.rows[task["id"]] = row
             if self.selected_id:
                 self._show_detail(self.store.get(self.selected_id))
@@ -440,10 +519,11 @@ class RouterWindow(Gtk.ApplicationWindow):
     def _show_detail(self, task: dict | None) -> None:
         if not task:
             return
-        self.task_title.set_text(f"Task {task['id']} · {task['state']}")
+        self.task_title.set_text(task["prompt"].splitlines()[0][:96] or f"Task {task['id']}")
         self.meta.set_text(f"Type: {task['task_type'] or 'pending'}   Complexity: {task['complexity'] or '—'}/5   Priority: {task['priority'] if task['priority'] is not None else '—'}/100\nRisk: {task['risk'] or '—'}   Confidence: {task['confidence'] if task['confidence'] is not None else '—'}   Suggested: {task['suggested_model'] or '—'}   Assigned: {task['assigned_model'] or '—'}")
         routing = task.get("routing_reason") or "Routing policy will be shown after triage."
         self.rationale.set_text("Triage: " + (task["rationale"] or "Triage is pending.") + "\nRouting: " + routing)
+        self.request.set_text(task["prompt"])
         self.output.get_buffer().set_text(task["error"] if task["state"] == "blocked" and task["error"] else task["output"] or "No model output yet.")
         self.git_task_info.set_text(
             f"Checkout: {task['git_repo'] or 'none'}\nContext files: {task['git_context_paths'] or 'none'}\n"
@@ -527,9 +607,8 @@ class RouterWindow(Gtk.ApplicationWindow):
         if self.available_models is not None and not self.resolved_models.get(model):
             self.status.set_text(f"{model} is not advertised by the local router; assign an available model before retrying.")
             return
-        triage_failed = not task["assigned_model"] and not task["suggested_model"] and task["complexity"] is None
-        retry_state = "triage_pending" if triage_failed else "queued"
-        retry_detail = "User retried Qwen triage" if triage_failed else "User retried task"
+        retry_state = retry_state_for_task(task)
+        retry_detail = "User retried Qwen triage" if retry_state == "triage_pending" else "User retried task"
         if not self.store.update_if_state(task["id"], {"blocked"}, retry_state, retry_detail,
                                           retry_count=task["retry_count"] + 1, error=""):
             self.status.set_text("Task state changed before retry; inspect its current state.")
@@ -654,7 +733,7 @@ class RouterWindow(Gtk.ApplicationWindow):
             buttons=Gtk.ButtonsType.OK_CANCEL,
             text="Apply this Codex-approved patch to the selected Git working tree?",
         )
-        dialog.set_secondary_text("The app will modify only the validated files. It will not stage, commit, or push changes.")
+        dialog.set_property("secondary-text", "The app will modify only the validated files. It will not stage, commit, or push changes.")
         dialog.connect("response", self._confirm_apply_git_patch, task["id"])
         dialog.present()
 

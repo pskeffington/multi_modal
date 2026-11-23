@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: build check run install-user install-gpu-optimizer
+.PHONY: build check test run install-user install-gpu-optimizer
 
 build:
 	$(PYTHON) -m compileall -q src
@@ -20,6 +20,9 @@ check: build
 	else \
 		echo "desktop-file-validate unavailable; desktop entry validation skipped"; \
 	fi
+
+test:
+	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests -v
 
 run:
 	sh scripts/launch.sh

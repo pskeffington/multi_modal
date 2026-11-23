@@ -28,6 +28,7 @@ No Python packages are installed by the project. GTK4/PyGObject come from the Li
 ```sh
 make build        # Compile the application modules
 make check        # Compile, check shell syntax, and validate the installed desktop entry when available
+make test         # Run prompt lifecycle, local API contract, and GTK compatibility checks
 make run          # Start the desktop application
 make install-user # Install a per-user desktop launcher
 make install-gpu-optimizer # Install the GPU optimizer executable and desktop icon
@@ -44,6 +45,8 @@ sh scripts/install-user.sh
 ```
 
 Qwen handles triage and is the default task model. GLM is available for user-confirmed escalation and may take much longer. Inference is serialized. Codex review is a copy/paste handoff; the app does not launch Codex CLI.
+
+The desktop uses a conversation workspace with task history in a left sidebar, the selected request and model response in the main pane, and a bottom composer. Press Enter to submit and Shift+Enter for a new line. Tool options for web research and Git context are grouped under the composer.
 
 For repository tasks, users can attach a Git checkout and selected text files as local model context. A proposed unified diff can be applied to clean working-tree files only after Codex approval, validation, and a separate confirmation. The app never stages, commits, or pushes. See [the operator guide](docs/OPERATIONS.md) and [architecture notes](docs/ARCHITECTURE.md).
 
