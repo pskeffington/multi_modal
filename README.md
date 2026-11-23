@@ -47,7 +47,7 @@ sh scripts/install-user.sh
 
 Qwen handles triage and is the default task model. GLM is available for user-confirmed escalation and may take much longer. Inference is serialized. Codex review is a copy/paste handoff; the app does not launch Codex CLI.
 
-The desktop uses a conversation workspace with task history in a left sidebar, the selected request and model response in the main pane, and a bottom composer. Press Enter to submit and Shift+Enter for a new line. Tool options for web research and Git context are grouped under the composer.
+The desktop uses a conversation workspace with task history in a left sidebar, persisted user/model turns in the main pane, and a bottom composer. Press Enter to submit and Shift+Enter for a new line. After Codex approval, continue the selected conversation; follow-ups retain prior turns and use the same assigned model. Tool options for web research and Git context are grouped under the composer.
 
 See [prompt QA status](docs/PROMPT_QA_STATUS.md) for the current regression evidence and the live-model checks that still need an active local Qwen/GPU session.
 

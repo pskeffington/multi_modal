@@ -158,6 +158,64 @@ class PromptWorkflowTests(unittest.TestCase):
         self.assertEqual([call[0] for call in client.calls], [QWEN, GLM, GLM])
         self.assertEqual(client.calls[-1][1][-2], {"role": "assistant", "content": "Use a feature branch and review before merge."})
         self.assertIn("force pushes are risky", client.calls[-1][1][-1]["content"])
+        turns = self.store.messages(task_id)
+        self.assertEqual([turn["role"] for turn in turns], ["user", "assistant", "user", "assistant"])
+        self.assertEqual(turns[2]["source"], "review")
+
+    def test_approved_conversation_accepts_followup_with_prior_turns(self) -> None:
+        task_id, client = self.run_task("Explain a stack data structure.",
+                                        [triage(), "A stack is last in, first out.", "Here is a Python list example using append and pop."])
+        self.assertFalse(self.store.continue_task(task_id, "What is it?"))
+        self.assertTrue(self.store.update_if_state(task_id, {"review_pending"}, "done",
+                                                   "QA approval", review_response="APPROVE"))
+        self.assertTrue(self.store.continue_task(task_id, "Show a short Python example."))
+        self.worker.submit()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.store.get(task_id)["state"] not in {"review_pending", "blocked"}:
+            time.sleep(0.01)
+        task = self.store.get(task_id)
+        self.assertEqual(task["state"], "review_pending")
+        self.assertEqual(task["prompt"], "Explain a stack data structure.")
+        self.assertEqual([call[0] for call in client.calls], [QWEN, QWEN, QWEN])
+        sent = client.calls[-1][1]
+        self.assertEqual([message["role"] for message in sent], ["system", "user", "assistant", "user"])
+        self.assertEqual(sent[-2]["content"], "A stack is last in, first out.")
+        self.assertEqual(sent[-1]["content"], "Show a short Python example.")
+        self.assertEqual([turn["role"] for turn in self.store.messages(task_id)],
+                         ["user", "assistant", "user", "assistant"])
+
+    def test_legacy_task_is_seeded_before_followup(self) -> None:
+        task_id = self.store.create("Old task prompt")
+        self.store.update(task_id, "done", "Legacy approved task", assigned_model=QWEN,
+                          suggested_model=QWEN, complexity=1, output="Legacy answer",
+                          review_response="APPROVE")
+        self.assertTrue(self.store.continue_task(task_id, "A follow-up question"))
+        messages = self.store.messages(task_id)
+        self.assertEqual([message["role"] for message in messages], ["user", "assistant", "user"])
+        self.assertEqual(messages[0]["content"], "Old task prompt")
+        self.assertEqual(messages[1]["content"], "Legacy answer")
+
+    def test_review_instruction_is_consumed_once_across_retry(self) -> None:
+        task_id = self.store.create("Original prompt")
+        self.store.update(task_id, "queued", "Test revision", assigned_model=QWEN,
+                          suggested_model=QWEN, complexity=1, review_response="Add a useful example.")
+        client = ScriptedClient([LocalModelError("temporary disconnect"), "Revised answer with an example."])
+        self.worker = TaskWorker(self.store, client, lambda _task_id: None)
+        self.worker.submit()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.store.get(task_id)["state"] != "blocked":
+            time.sleep(0.01)
+        self.assertEqual(self.store.get(task_id)["state"], "blocked")
+        self.assertEqual(self.store.get(task_id)["review_response"], "")
+        self.assertEqual(sum(message["source"] == "review" for message in self.store.messages(task_id)), 1)
+        self.store.update_if_state(task_id, {"blocked"}, "queued", "QA retry")
+        self.worker.submit()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.store.get(task_id)["state"] not in {"review_pending", "blocked"}:
+            time.sleep(0.01)
+        self.assertEqual(self.store.get(task_id)["state"], "review_pending")
+        self.assertEqual(sum(message["source"] == "review" for message in self.store.messages(task_id)), 1)
+        self.assertIn("Add a useful example", client.calls[-1][1][-1]["content"])
 
     def test_research_and_repository_context_are_marked_untrusted(self) -> None:
         prompt = "Summarize the attached research."
