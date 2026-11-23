@@ -109,8 +109,10 @@ class TaskWorker:
         self.notify(task["id"])
 
     def _execute(self, task: dict) -> None:
+        task = self.store.claim_for_execution(task["id"], QWEN)
+        if task is None:
+            return
         model = task["assigned_model"] or task["suggested_model"] or QWEN
-        self.store.update(task["id"], "running", f"Started local request on {model}", assigned_model=model, error="")
         self.notify(task["id"])
         notes = task["review_response"]
         prompt = task["prompt"]

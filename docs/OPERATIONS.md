@@ -10,9 +10,11 @@
 ## Task flow
 
 1. Enter a task and submit it. Qwen returns complexity (1–5), priority (0–100), risk, confidence, rationale, and a suggested model. JSON extraction tolerates surrounding prose or code fences, while scores and risk must pass schema checks.
-2. GLM recommendations are honored only at complexity 3 or higher and confidence 0.70 or higher; other recommendations stay on Qwen. High-risk work or confidence below 0.55 requires a human choice. Task details show why a model was assigned. For queued tasks, the assignment dropdown can change the model before work starts.
+2. GLM recommendations are honored only at complexity 3 or higher and confidence 0.70 or higher; other recommendations stay on Qwen. High-risk work or confidence below 0.55 requires a human choice. Task details show why a model was assigned and whether its configured ID is advertised by the local router. For queued, blocked, or attention-required tasks, the assignment dropdown can change the model before work starts; the manual override is recorded in the task history and routing reason.
 3. The worker processes one request at a time. Qwen is the default; GLM can be much slower and should be chosen for work that warrants the wait.
 4. Completion or a detected blocker creates a review packet. Copy it to Codex manually, paste the response, and record approval or return changes. Revisions retain the original assigned local model.
+
+The task status line describes the next action for the selected state (triage, user decision, queue, inference, review, blocker recovery, or completion). Read that line alongside the event history when resuming older tasks.
 
 ## Git checkout workflow
 

@@ -106,6 +106,35 @@ class TaskStore:
     def update(self, task_id: str, state: str, detail: str, **fields: Any) -> None:
         if state not in STATES:
             raise ValueError(f"Invalid task state: {state}")
+        with self.lock:
+            self._write_update(task_id, state, detail, fields)
+
+    def update_if_state(self, task_id: str, expected: set[str], state: str, detail: str, **fields: Any) -> bool:
+        """Apply a UI transition only if the task is still in an editable state."""
+        if state not in STATES or not expected <= STATES:
+            raise ValueError("Invalid task state")
+        with self.lock:
+            row = self.db.execute("SELECT state FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if not row or row["state"] not in expected:
+                return False
+            self._write_update(task_id, state, detail, fields)
+            return True
+
+    def claim_for_execution(self, task_id: str, default_model: str) -> dict[str, Any] | None:
+        """Atomically claim queued work and return its latest model assignment."""
+        with self.lock:
+            row = self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if not row or row["state"] not in {"queued", "revision_queued"}:
+                return None
+            task = dict(row)
+            model = task["assigned_model"] or task["suggested_model"] or default_model
+            self._write_update(task_id, "running", f"Started local request on {model}",
+                               {"assigned_model": model, "error": ""})
+            return dict(self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
+
+    def _write_update(self, task_id: str, state: str, detail: str, fields: dict[str, Any]) -> None:
+        if state not in STATES:
+            raise ValueError(f"Invalid task state: {state}")
         allowed = {"task_type", "complexity", "priority", "risk", "confidence", "rationale", "routing_reason", "suggested_model", "assigned_model", "output", "review_packet", "review_response", "retry_count", "error", "git_repo", "git_context", "git_context_paths", "git_patch_sha256"}
         if fields.keys() - allowed:
             raise ValueError("Unknown task fields")
@@ -115,10 +144,9 @@ class TaskStore:
             assignments.append(f"{key}=?")
             values.append(value)
         values.append(task_id)
-        with self.lock:
-            self.db.execute(f"UPDATE tasks SET {', '.join(assignments)} WHERE id=?", values)
-            self._event(task_id, state, detail)
-            self.db.commit()
+        self.db.execute(f"UPDATE tasks SET {', '.join(assignments)} WHERE id=?", values)
+        self._event(task_id, state, detail)
+        self.db.commit()
 
     def close(self) -> None:
         with self.lock:

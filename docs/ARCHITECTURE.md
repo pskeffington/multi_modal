@@ -10,7 +10,7 @@ Use GTK4/PyGObject to provide a native Linux desktop window. The launch script u
 
 Exceptional paths include `needs_attention` for unsafe or low-confidence triage, `blocked` for model or runtime failures, `revision_queued` after Codex requests changes, and `cancelled` for work not yet submitted to inference. The assigned-model field persists through review and revision cycles.
 
-The app uses one background worker and a process lock. Queue ordering uses advisory priority followed by age; users can override model assignment before execution.
+The app uses one background worker and a process lock. Queue ordering uses advisory priority followed by age. Claiming queued work is atomic with reading the assigned model, so a user model override either commits before execution and is honored or is rejected after the worker has claimed the task. User review and retry actions also check the task's current state before changing it.
 
 ## Model boundary
 

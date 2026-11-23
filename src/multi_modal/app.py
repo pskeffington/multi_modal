@@ -22,6 +22,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         super().__init__(application=app, title="Multi Modal — Local Task Router")
         self.set_default_size(1160, 800)
         self.store, self.worker = store, worker
+        self.available_models: set[str] | None = None
         self.selected_id: str | None = None
         self._refreshing = False
         self.rows: dict[str, Gtk.ListBoxRow] = {}
@@ -135,6 +136,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.output.set_size_request(-1, 170)
         out_scroll = Gtk.ScrolledWindow(min_content_height=165)
         out_scroll.set_child(self.output)
+        detail.append(Gtk.Label(label="Local model response or error", xalign=0))
         detail.append(out_scroll)
 
         detail.append(Gtk.Label(label="Git working-tree patch", xalign=0))
@@ -168,6 +170,8 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.retry_btn.connect("clicked", self._retry)
         assignment.append(self.retry_btn)
         detail.append(assignment)
+        self.assignment_help = Gtk.Label(label="The assignment is advisory until queued; you can change it before execution.", xalign=0, wrap=True)
+        detail.append(self.assignment_help)
 
         review_buttons = Gtk.Box(spacing=8)
         self.copy_btn = Gtk.Button(label="Copy Codex review packet")
@@ -212,9 +216,15 @@ class RouterWindow(Gtk.ApplicationWindow):
             client = LocalClient()
             models = client.models()
             text = "Router online · " + (", ".join(models) if models else "no models advertised")
+            GLib.idle_add(self._models_updated, models)
         except (ValueError, LocalModelError) as exc:
             text = f"Router unavailable · {exc}"
         GLib.idle_add(self.health.set_text, text)
+
+    def _models_updated(self, models: list[str]) -> bool:
+        self.available_models = set(models)
+        self._refresh()
+        return False
 
     def _submit(self, *_args) -> None:
         buf = self.prompt.get_buffer()
@@ -292,7 +302,17 @@ class RouterWindow(Gtk.ApplicationWindow):
             self.patch_preview.get_buffer().set_text(self.patch_value)
         selected = 1 if (task["assigned_model"] or task["suggested_model"]) == GLM else 0
         self.model_choice.set_selected(selected)
-        self.assign_btn.set_sensitive(task["state"] in {"needs_attention", "blocked", "queued"})
+        can_assign = task["state"] in {"needs_attention", "blocked", "queued"}
+        self.model_choice.set_sensitive(can_assign)
+        self.assign_btn.set_sensitive(can_assign)
+        assigned = task["assigned_model"] or task["suggested_model"] or QWEN
+        self.assignment_help.set_text(
+            f"Current route: {assigned}. {task.get('routing_reason') or 'Triage has not selected a route yet.'} "
+            + ("Choose another model and assign it before execution." if can_assign else "Assignment is locked while this task is in its current state.")
+        )
+        if self.available_models is not None and assigned not in self.available_models:
+            warning = "No model IDs are advertised." if not self.available_models else f"{assigned} is not advertised by the local router. Check model IDs or environment overrides before retrying."
+            self.assignment_help.set_text(self.assignment_help.get_text() + " " + warning)
         self.retry_btn.set_sensitive(task["state"] == "blocked")
         self.copy_btn.set_sensitive(bool(task["review_packet"]))
         self.approve_btn.set_sensitive(task["state"] == "review_pending")
@@ -301,8 +321,18 @@ class RouterWindow(Gtk.ApplicationWindow):
         can_validate = bool(approved and task["git_repo"] and self.patch_value and not task["git_patch_sha256"])
         self.validate_patch_btn.set_sensitive(can_validate)
         self.apply_patch_btn.set_sensitive(bool(can_validate and self.patch_validation and self.patch_validation[0] == task["id"]))
-        if task["review_packet"]:
-            self.status.set_text("Codex review is manual: copy packet, review it in Codex, then paste the response.")
+        state_guidance = {
+            "triage_pending": "Waiting for Qwen to score and route this task.",
+            "needs_attention": "Triage needs your decision. Review its risk and scores, choose a model, then assign it.",
+            "queued": f"Queued for {task['assigned_model'] or task['suggested_model'] or QWEN}; the worker handles one request at a time.",
+            "running": f"Local inference is running on {task['assigned_model'] or task['suggested_model'] or QWEN}.",
+            "review_pending": "Response ready. Copy the review packet to Codex, then paste APPROVE or actionable CHANGES.",
+            "blocked": "Task blocked. Inspect the error and review packet; retry or assign another model.",
+            "revision_queued": f"Requested changes are queued for the original model ({task['assigned_model'] or task['suggested_model'] or QWEN}).",
+            "done": "Review approval recorded. Any attached Git patch still requires separate validation and confirmation.",
+            "cancelled": "Task cancelled.",
+        }
+        self.status.set_text(state_guidance.get(task["state"], f"Task state: {task['state']}"))
         events = self.store.events(task["id"])
         self.history.set_text("History:\n" + "\n".join(f"{e['state']} — {e['detail']}" for e in events[-8:]))
 
@@ -311,7 +341,15 @@ class RouterWindow(Gtk.ApplicationWindow):
         if not task or task["state"] not in {"needs_attention", "blocked", "queued"}:
             return
         model = GLM if self.model_choice.get_selected() == 1 else QWEN
-        self.store.update(task["id"], "queued", f"User assigned {model}", assigned_model=model)
+        prior_reason = task.get("routing_reason") or "No prior route was selected."
+        reason = f"Manual override: user assigned {model}. Previous routing: {prior_reason}"
+        updated = self.store.update_if_state(task["id"], {"needs_attention", "blocked", "queued"},
+                                             "queued", f"User assigned {model}",
+                                             assigned_model=model, routing_reason=reason)
+        if not updated:
+            self.status.set_text("Task state changed before assignment; review its current state and choose again.")
+            self._refresh()
+            return
         self.worker.submit()
         self._refresh()
 
@@ -319,7 +357,11 @@ class RouterWindow(Gtk.ApplicationWindow):
         task = self.store.get(self.selected_id or "")
         if not task or task["state"] != "blocked":
             return
-        self.store.update(task["id"], "queued", "User retried task", retry_count=task["retry_count"] + 1)
+        if not self.store.update_if_state(task["id"], {"blocked"}, "queued", "User retried task",
+                                          retry_count=task["retry_count"] + 1):
+            self.status.set_text("Task state changed before retry; inspect its current state.")
+            self._refresh()
+            return
         self.worker.submit()
         self._refresh()
 
@@ -342,7 +384,11 @@ class RouterWindow(Gtk.ApplicationWindow):
         if not response.upper().startswith("APPROVE"):
             self.status.set_text("Use APPROVE here; use the changes button for CHANGES instructions.")
             return
-        self.store.update(task["id"], "done", "User recorded Codex review approval", review_response=response)
+        if not self.store.update_if_state(task["id"], {"review_pending"}, "done",
+                                          "User recorded Codex review approval", review_response=response):
+            self.status.set_text("Task state changed before approval; inspect its current state.")
+            self._refresh()
+            return
         self._refresh()
 
     def _choose_repo(self, *_args) -> None:
@@ -478,7 +524,12 @@ class RouterWindow(Gtk.ApplicationWindow):
         if response.upper().startswith("APPROVE"):
             self.status.set_text("This is an approval. Use Approve review.")
             return
-        self.store.update(task["id"], "revision_queued", "Codex requested changes; returning to the original model", review_response=response)
+        if not self.store.update_if_state(task["id"], {"review_pending", "blocked"}, "revision_queued",
+                                         "Codex requested changes; returning to the original model",
+                                         review_response=response):
+            self.status.set_text("Task state changed before routing the requested changes; inspect its current state.")
+            self._refresh()
+            return
         self.worker.submit()
         self._refresh()
 
