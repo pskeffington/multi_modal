@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import fcntl
+import json
+import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -29,6 +32,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.model_states: dict[str, str] = {}
         self.health_check_lock = threading.Lock()
         self.router_starting = False
+        self.prompt_qa_running = False
         self._research_busy = False
         self._web_research_query = ""
         self.web_research_context = ""
@@ -69,6 +73,10 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.refresh_models_btn = Gtk.Button(label="Refresh models")
         self.refresh_models_btn.connect("clicked", self._start_health_check)
         header.append(self.refresh_models_btn)
+        self.prompt_qa_btn = Gtk.Button(label="Run prompt QA")
+        self.prompt_qa_btn.set_tooltip_text("Run the local Qwen prompt suite from this desktop session")
+        self.prompt_qa_btn.connect("clicked", self._run_prompt_qa)
+        header.append(self.prompt_qa_btn)
         root.append(header)
 
         compose = Gtk.Frame(label="Message")
@@ -408,8 +416,85 @@ class RouterWindow(Gtk.ApplicationWindow):
             self.available_models = set(models)
             self.resolved_models = {model: resolve_model_id(model, models) for model in (QWEN, GLM)}
             self.model_states = {item["id"]: item["status"] for item in catalog}
+        self.prompt_qa_btn.set_sensitive(bool(self.resolved_models.get(QWEN)) and not self.prompt_qa_running)
         self._refresh()
         return False
+
+    def _run_prompt_qa(self, *_args) -> None:
+        if self.prompt_qa_running:
+            return
+        active_tasks = [task for task in self.store.all()
+                        if task["state"] in {"triage_pending", "queued", "running", "revision_queued"}]
+        if active_tasks:
+            self.status.set_text("Let queued model tasks finish before starting prompt QA, so the evaluation does not compete for the local model.")
+            return
+        if not self.resolved_models.get(QWEN):
+            self.status.set_text("Refresh models and confirm Qwen is available before running prompt QA.")
+            return
+        app_root = Path(__file__).resolve().parents[2]
+        script = app_root / "scripts" / "prompt_qa.py"
+        if not script.is_file():
+            self.status.set_text(f"Prompt QA script not found: {script}")
+            return
+        command = [sys.executable, str(script)]
+        self.prompt_qa_running = True
+        self.prompt_qa_btn.set_sensitive(False)
+        self.status.set_text("Live Qwen prompt QA is running from this desktop session; this can take a few minutes.")
+        threading.Thread(target=self._prompt_qa_worker, args=(command,), daemon=True).start()
+
+    def _prompt_qa_worker(self, command: list[str]) -> None:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=1800, check=False)
+            GLib.idle_add(self._prompt_qa_finished, result.returncode, result.stdout, result.stderr)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            GLib.idle_add(self._prompt_qa_finished, 2, "", f"Prompt QA could not finish: {exc}")
+
+    def _prompt_qa_finished(self, returncode: int, stdout: str, stderr: str) -> bool:
+        self.prompt_qa_running = False
+        self.prompt_qa_btn.set_sensitive(bool(self.resolved_models.get(QWEN)))
+        if stdout.strip():
+            try:
+                report = json.loads(stdout)
+                summary = report.get("automated_summary", {})
+                self.status.set_text(
+                    f"Prompt QA finished: {summary.get('passed', 0)}/{summary.get('total', 0)} automated checks passed; manual review is required."
+                    if returncode == 0 else
+                    f"Prompt QA finished with failing checks (exit {returncode}); inspect the report and manual criteria."
+                )
+                self._show_prompt_qa_report(json.dumps(report, ensure_ascii=False, indent=2))
+                return False
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        detail = stderr.strip() or stdout.strip() or f"Prompt QA exited with status {returncode} and no report."
+        self.status.set_text("Prompt QA could not run: " + detail[:500])
+        self._show_prompt_qa_report(detail)
+        return False
+
+    def _show_prompt_qa_report(self, report: str) -> None:
+        window = Gtk.Window(title="Live Qwen Prompt QA", transient_for=self, modal=True,
+                            default_width=850, default_height=620)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(10); box.set_margin_bottom(10)
+        box.set_margin_start(10); box.set_margin_end(10)
+        window.set_child(box)
+        box.append(Gtk.Label(
+            label="Automated checks cover formatting and required content. Review the answer quality criteria and every generated answer below.",
+            xalign=0, wrap=True))
+        view = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        view.get_buffer().set_text(report)
+        scroll = Gtk.ScrolledWindow(min_content_height=480)
+        scroll.set_vexpand(True)
+        scroll.set_child(view)
+        box.append(scroll)
+        actions = Gtk.Box(spacing=8)
+        copy_btn = Gtk.Button(label="Copy report")
+        copy_btn.connect("clicked", lambda *_: Gdk.Display.get_default().get_clipboard().set_text(report))
+        actions.append(copy_btn)
+        close_btn = Gtk.Button(label="Close")
+        close_btn.connect("clicked", lambda *_: window.close())
+        actions.append(close_btn)
+        box.append(actions)
+        window.present()
 
     def _draft_text(self) -> str:
         buf = self.prompt.get_buffer()
