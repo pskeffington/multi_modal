@@ -13,6 +13,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk
 
 from .client import GLM, QWEN, LocalClient, LocalModelError, resolve_model_id
 from .git_workspace import GitWorkspaceError, apply_patch as apply_git_patch, extract_unified_diff, read_context, repository_root, validate_patch
+from .router_control import RouterControlError, start_user_router
 from .store import TaskStore, data_dir
 from .web_research import research as scrape_web
 from .worker import TaskWorker, retry_state_for_task
@@ -27,6 +28,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.resolved_models: dict[str, str | None] = {QWEN: None, GLM: None}
         self.model_states: dict[str, str] = {}
         self.health_check_lock = threading.Lock()
+        self.router_starting = False
         self._research_busy = False
         self._web_research_query = ""
         self.web_research_context = ""
@@ -61,6 +63,9 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.health = Gtk.Label(label="Checking local router…", xalign=1)
         self.health.set_hexpand(True)
         header.append(self.health)
+        self.start_router_btn = Gtk.Button(label="Start local router")
+        self.start_router_btn.connect("clicked", self._start_router)
+        header.append(self.start_router_btn)
         self.refresh_models_btn = Gtk.Button(label="Refresh models")
         self.refresh_models_btn.connect("clicked", self._start_health_check)
         header.append(self.refresh_models_btn)
@@ -291,6 +296,45 @@ class RouterWindow(Gtk.ApplicationWindow):
     def _start_health_check(self, *_args) -> None:
         if not self.health_check_lock.locked():
             threading.Thread(target=self._check_health, daemon=True).start()
+
+    def _start_router(self, *_args) -> None:
+        if self.router_starting:
+            return
+        self.router_starting = True
+        self.start_router_btn.set_sensitive(False)
+        self.start_router_btn.set_label("Starting router…")
+        self.status.set_text("Starting the configured llama-router user service from this desktop session…")
+        threading.Thread(target=self._start_router_worker, daemon=True).start()
+
+    def _start_router_worker(self) -> None:
+        try:
+            catalog, started = start_user_router()
+            detail = "Local router started and ready." if started else "Local router is already online."
+            GLib.idle_add(self._router_started, catalog, detail)
+        except RouterControlError as exc:
+            GLib.idle_add(self._router_start_failed, str(exc))
+
+    def _router_started(self, catalog: list[dict[str, str]], detail: str) -> bool:
+        self.router_starting = False
+        self.start_router_btn.set_sensitive(True)
+        self.start_router_btn.set_label("Start local router")
+        models = [item["id"] for item in catalog]
+        states = {item["id"]: item["status"] for item in catalog}
+        qwen_id = resolve_model_id(QWEN, models)
+        glm_id = resolve_model_id(GLM, models)
+        health = ("Router online · " + (f"Qwen {states.get(qwen_id, 'ready')}" if qwen_id else "Qwen ID missing")
+                  + " · " + (f"GLM {states.get(glm_id, 'ready')}" if glm_id else "GLM ID missing"))
+        self._models_updated(catalog, health)
+        self.status.set_text(detail)
+        return False
+
+    def _router_start_failed(self, error: str) -> bool:
+        self.router_starting = False
+        self.start_router_btn.set_sensitive(True)
+        self.start_router_btn.set_label("Start local router")
+        self.health.set_text("Router unavailable · " + error)
+        self.status.set_text("Router startup failed. Check the desktop session's user-service logs.")
+        return False
 
     def _periodic_health_check(self) -> bool:
         self._start_health_check()

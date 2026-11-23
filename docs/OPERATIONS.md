@@ -4,6 +4,7 @@
 
 - Run `scripts/launch.sh`, or install `scripts/install-user.sh` and open **Multi Modal Task Router** from the desktop menu.
 - The router must be available at `http://127.0.0.1:9931`. The UI shows model IDs advertised by its `/v1/models` or `/models` endpoint.
+- If it is offline, press **Start local router** in the GUI. This starts the configured `llama-router.service` through the active desktop user's systemd session, then waits for its model catalog. If startup fails, inspect `journalctl --user -u llama-router.service`; no root access is required.
 - Optional environment overrides adapt the deployment without code edits: `MULTI_MODAL_ROUTER_URL` (must remain loopback HTTP), `MULTI_MODAL_QWEN_MODEL`, and `MULTI_MODAL_GLM_MODEL`.
 - App data lives under `$XDG_DATA_HOME/multi_modal` or `~/.local/share/multi_modal`, with a private SQLite task journal.
 
