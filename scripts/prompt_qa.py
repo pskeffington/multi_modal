@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import ast
 import re
 import sys
 import tempfile
@@ -41,9 +42,10 @@ CASES = [
     },
     {
         "id": "coding-and-edge-cases",
-        "messages": [{"role": "user", "content": "Write a Python function named is_valid_ipv4(value) that returns a boolean. Include a few tests for valid and invalid input, including leading zeroes. Do not use third-party packages."}],
+        "messages": [{"role": "user", "content": "Write a Python function named is_valid_ipv4(value) that returns a boolean. Include tests for exactly these cases: \"192.168.1.1\" is valid, \"256.1.1.1\" is invalid, and \"01.2.3.4\" is invalid. Do not use third-party packages."}],
         "checks": {"contains": ["is_valid_ipv4"], "contains_any_groups": [["unittest", "assert ", "pytest"]],
-                   "contains_all_groups": [["192.168.1.1"], ["256.1.1.1"], ["01.2.3.4"]]},
+                   "contains_all_groups": [["192.168.1.1"], ["256.1.1.1"], ["01.2.3.4"]],
+                   "python_fences_parse": True},
         "review": "Runnable standard-library implementation with sensible IPv4 edge cases.",
     },
     {
@@ -70,9 +72,9 @@ CASES = [
     },
     {
         "id": "ambiguous-request",
-        "messages": [{"role": "user", "content": "Make it faster."}],
-        "checks": {"question_mark": True, "max_words": 100},
-        "review": "Recognizes missing context and asks what should be made faster rather than inventing an object or claiming to act.",
+        "messages": [{"role": "user", "content": "Make it faster. Ask only one concise clarifying question of 20 words or fewer. Do not offer options or claim to have changed anything."}],
+        "checks": {"question_mark": True, "max_words": 20},
+        "review": "Recognizes missing context and asks one concise question rather than inventing an object or claiming to act.",
     },
     {
         "id": "context-grounding",
@@ -91,7 +93,7 @@ CASES = [
 
 def check_answer(answer: str, checks: dict) -> dict:
     folded = answer.casefold()
-    results = {}
+    results = {"nonempty_response": bool(answer.strip())}
     if "contains" in checks:
         results["contains"] = {item: item.casefold() in folded for item in checks["contains"]}
     if "contains_any_groups" in checks:
@@ -132,6 +134,16 @@ def check_answer(answer: str, checks: dict) -> dict:
             results["json"] = {"valid": valid, "parsed": value}
         except (json.JSONDecodeError, TypeError):
             results["json"] = {"valid": False, "parsed": None}
+    if checks.get("python_fences_parse"):
+        blocks = re.findall(r"```(?:python|py)\s*\n(.*?)```", answer, flags=re.IGNORECASE | re.DOTALL)
+        errors = []
+        for index, block in enumerate(blocks, start=1):
+            try:
+                ast.parse(block)
+            except SyntaxError as exc:
+                errors.append({"block": index, "line": exc.lineno, "message": exc.msg})
+        results["python_fences_parse"] = {"block_count": len(blocks), "errors": errors,
+                                          "passed": bool(blocks) and not errors}
     return results
 
 

@@ -151,6 +151,11 @@ class PromptEvalRubricTests(unittest.TestCase):
         self.assertTrue(result["contains"]["437"])
         self.assertFalse(check_answer("The answer is 438.", {"contains": ["437"]})["contains"]["437"])
 
+    def test_empty_answer_never_passes_even_when_no_other_rubric_is_configured(self) -> None:
+        result = check_answer(" \n ", {})
+        self.assertFalse(result["nonempty_response"])
+        self.assertFalse(checks_passed(result))
+
     def test_summary_rubric_counts_bullets(self) -> None:
         result = check_answer("- one\n- two\n- three", {"bullet_count": 3})
         self.assertTrue(result["bullet_count"]["passed"])
@@ -165,6 +170,11 @@ class PromptEvalRubricTests(unittest.TestCase):
         self.assertTrue(all(case["review"] for case in CASES))
         follow_up = next(case for case in CASES if case["id"] == "multi-turn-follow-up")
         self.assertEqual(len(follow_up["turns"]), 2)
+        coding = next(case for case in CASES if case["id"] == "coding-and-edge-cases")
+        self.assertIn('"256.1.1.1" is invalid', coding["messages"][0]["content"])
+        ambiguous = next(case for case in CASES if case["id"] == "ambiguous-request")
+        self.assertIn("20 words or fewer", ambiguous["messages"][0]["content"])
+        self.assertEqual(ambiguous["checks"]["max_words"], 20)
 
     def test_rubric_checks_format_length_and_json_values(self) -> None:
         checks = check_answer('{"name":"apples","count":3}', {
@@ -192,6 +202,15 @@ class PromptEvalRubricTests(unittest.TestCase):
             "contains_all_groups": [["192.168.1.1"], ["256.1.1.1"]],
         })
         self.assertFalse(checks_passed(checks))
+
+    def test_python_code_rubric_parses_without_executing_generated_code(self) -> None:
+        valid = check_answer("```python\ndef answer():\n    return 437\n```", {"python_fences_parse": True})
+        self.assertTrue(valid["python_fences_parse"]["passed"])
+        invalid = check_answer("```python\nassert is_valid_ipv4(192.168.1.1)\n```", {
+            "python_fences_parse": True,
+        })
+        self.assertFalse(invalid["python_fences_parse"]["passed"])
+        self.assertTrue(invalid["python_fences_parse"]["errors"])
 
 
 if __name__ == "__main__":
