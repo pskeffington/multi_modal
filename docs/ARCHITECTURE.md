@@ -14,7 +14,7 @@ The app uses one background worker and a process lock. Queue ordering uses advis
 
 ## Model boundary
 
-The worker calls an OpenAI-compatible llama.cpp API on loopback only. Qwen is the default triage and task model; GLM is an optional escalation. Model IDs and the router URL can be changed through documented environment variables. Generated responses are untrusted text. The worker has no arbitrary filesystem or command interface.
+The worker calls an OpenAI-compatible llama.cpp API on loopback only. Qwen is the default triage and task model; GLM is an optional escalation. Triage must return bounded numeric scores and a risk category. The router accepts a GLM recommendation only at complexity 3 or higher and confidence 0.70 or higher; otherwise it keeps Qwen. High risk or confidence below 0.55 pauses for user input regardless of model recommendation. The reason for each assignment is stored and shown in task details. Model IDs and the router URL can be changed through documented environment variables. Generated responses are untrusted text. The worker has no arbitrary filesystem or command interface.
 
 ## Review boundary
 

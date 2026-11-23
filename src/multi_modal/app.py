@@ -274,7 +274,8 @@ class RouterWindow(Gtk.ApplicationWindow):
             return
         self.task_title.set_text(f"Task {task['id']} · {task['state']}")
         self.meta.set_text(f"Type: {task['task_type'] or 'pending'}   Complexity: {task['complexity'] or '—'}/5   Priority: {task['priority'] if task['priority'] is not None else '—'}/100\nRisk: {task['risk'] or '—'}   Confidence: {task['confidence'] if task['confidence'] is not None else '—'}   Suggested: {task['suggested_model'] or '—'}   Assigned: {task['assigned_model'] or '—'}")
-        self.rationale.set_text("Rationale: " + (task["rationale"] or "Triage is pending."))
+        routing = task.get("routing_reason") or "Routing policy will be shown after triage."
+        self.rationale.set_text("Triage: " + (task["rationale"] or "Triage is pending.") + "\nRouting: " + routing)
         self.output.get_buffer().set_text(task["output"] or task["error"] or "No model output yet.")
         self.git_task_info.set_text(
             f"Checkout: {task['git_repo'] or 'none'}\nContext files: {task['git_context_paths'] or 'none'}\n"

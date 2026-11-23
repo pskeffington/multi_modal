@@ -3,24 +3,41 @@
 from __future__ import annotations
 
 import json
-import re
+import math
 import threading
 from collections.abc import Callable
 
 from .client import GLM, QWEN, LocalClient, LocalModelError
 from .store import TaskStore
 
-TRIAGE_SCHEMA = "Return only JSON with keys task_type, complexity (integer 1-5), priority (integer 0-100), risk (low/medium/high), confidence (0-1), rationale, model (Qwen or GLM)."
+TRIAGE_SCHEMA = ("Return one JSON object with keys task_type, complexity (integer 1-5), priority (integer 0-100), "
+                 "risk (low/medium/high), confidence (number 0-1), rationale, model (Qwen or GLM). "
+                 "Prefer Qwen for routine work. Recommend GLM only for high-complexity work (complexity 3-5) "
+                 "when confidence is at least 0.70. Scores and model choice are advisory; the router enforces this rule.")
 
 
 def json_object(text: str) -> dict:
-    match = re.search(r"\{.*\}", text, flags=re.S)
-    if not match:
-        raise ValueError("No JSON object was returned")
-    result = json.loads(match.group(0))
-    if not isinstance(result, dict):
-        raise ValueError("Triage response is not an object")
-    return result
+    decoder = json.JSONDecoder()
+    for offset, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            result, _ = decoder.raw_decode(text[offset:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(result, dict):
+            return result
+    raise ValueError("No JSON object was returned")
+
+
+def choose_model(recommendation: object, complexity: int, confidence: float) -> tuple[str, str]:
+    """Apply a conservative, explainable escalation policy to Qwen triage."""
+    recommends_glm = str(recommendation).strip().lower() in {"glm", GLM.lower()}
+    if recommends_glm and complexity >= 3 and confidence >= 0.70:
+        return GLM, "Qwen recommended GLM; complexity and confidence meet escalation thresholds."
+    if recommends_glm:
+        return QWEN, "Kept Qwen: GLM recommendation did not meet complexity ≥3 and confidence ≥0.70 thresholds."
+    return QWEN, "Qwen recommendation retained for routine or lower-complexity work."
 
 
 class TaskWorker:
@@ -78,17 +95,17 @@ class TaskWorker:
                 or not isinstance(confidence, (int, float)) or isinstance(confidence, bool)):
             raise ValueError("Triage scores must use numeric JSON values and integer complexity/priority")
         confidence = float(confidence)
-        if complexity not in range(1, 6) or priority not in range(101) or not 0 <= confidence <= 1:
+        if complexity not in range(1, 6) or priority not in range(101) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
             raise ValueError("Triage scores are outside the allowed range")
         if data.get("risk") not in {"low", "medium", "high"}:
             raise ValueError("Triage risk must be low, medium, or high")
-        candidate = GLM if str(data.get("model", "")).lower() == "glm" else QWEN
+        candidate, routing_reason = choose_model(data.get("model", ""), complexity, confidence)
         state = "needs_attention" if confidence < 0.55 or data["risk"] == "high" or not str(data.get("rationale", "")).strip() else "queued"
         self.store.update(task["id"], state, "Qwen triage complete" if state == "queued" else "Triage needs user confirmation",
             task_type=str(data.get("task_type", "general"))[:80], complexity=complexity,
             priority=priority, risk=data["risk"], confidence=confidence,
             rationale=str(data.get("rationale", ""))[:1000], suggested_model=candidate,
-            assigned_model=candidate if state == "queued" else "")
+            routing_reason=routing_reason, assigned_model=candidate if state == "queued" else "")
         self.notify(task["id"])
 
     def _execute(self, task: dict) -> None:

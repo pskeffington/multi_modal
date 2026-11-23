@@ -38,6 +38,7 @@ class TaskStore:
               prompt TEXT NOT NULL, state TEXT NOT NULL, task_type TEXT DEFAULT '',
               complexity INTEGER, priority INTEGER, risk TEXT DEFAULT '',
               confidence REAL, rationale TEXT DEFAULT '', suggested_model TEXT DEFAULT '',
+              routing_reason TEXT NOT NULL DEFAULT '',
               assigned_model TEXT DEFAULT '', output TEXT DEFAULT '',
               review_packet TEXT DEFAULT '', review_response TEXT DEFAULT '',
               retry_count INTEGER NOT NULL DEFAULT 0, error TEXT DEFAULT '',
@@ -55,6 +56,7 @@ class TaskStore:
             ("git_context", "TEXT NOT NULL DEFAULT ''"),
             ("git_context_paths", "TEXT NOT NULL DEFAULT ''"),
             ("git_patch_sha256", "TEXT NOT NULL DEFAULT ''"),
+            ("routing_reason", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
@@ -104,7 +106,7 @@ class TaskStore:
     def update(self, task_id: str, state: str, detail: str, **fields: Any) -> None:
         if state not in STATES:
             raise ValueError(f"Invalid task state: {state}")
-        allowed = {"task_type", "complexity", "priority", "risk", "confidence", "rationale", "suggested_model", "assigned_model", "output", "review_packet", "review_response", "retry_count", "error", "git_repo", "git_context", "git_context_paths", "git_patch_sha256"}
+        allowed = {"task_type", "complexity", "priority", "risk", "confidence", "rationale", "routing_reason", "suggested_model", "assigned_model", "output", "review_packet", "review_response", "retry_count", "error", "git_repo", "git_context", "git_context_paths", "git_patch_sha256"}
         if fields.keys() - allowed:
             raise ValueError("Unknown task fields")
         assignments = ["state=?", "updated=?"]
