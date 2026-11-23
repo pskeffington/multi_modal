@@ -3,7 +3,7 @@
 ## Baseline and scope
 
 - Repository: `multi_modal`
-- Source commit: `49c0429c33f605ff12d565808156dab85a86d79a` (published to `main`; current QA report-persistence changes are pending commit)
+- Source commit: `5fcf8134b60ea6aec11cb6f3399e929a1c5b6c95` (published to `main`)
 - Observed: `2026-11-23 05:51 UTC`
 - QA scope: prompt routing and validation, persisted multi-turn conversation, response lifecycle, revision context, llama.cpp client contract, Qwen live prompt quality, and GTK prompt workflow.
 
@@ -21,7 +21,7 @@
 | Rendered GUI inspection | BLOCKED | `scripts/launch.sh` reports no active display. GTK initializes, but `Gdk.Display.get_default()` is `None`; visual layout and keyboard interaction were not observed. |
 | GPU-backed inference | BLOCKED | This execution environment exposes neither `/dev/dri` nor `/dev/kfd`, and llama.cpp lists no available devices here. No CPU fallback was used. |
 
-The prompt-recovery change, GUI layout refinement, and in-GUI QA runner are committed and pushed to `main` at `956514a830f94cdfd8975406add7b21cd43ad0b3`; installer executable permission is preserved. This check's report auto-save and diagnostic updates are currently pending commit. The user-provided earlier-run report is direct live-answer evidence and shows material Qwen failures, but its old schema omits server completion metadata. The latest direct probe to `http://127.0.0.1:9931/v1/models` failed with curl exit 7 (`Could not connect to server`), and GTK returned no default display when probed against the discovered Wayland socket, so the updated suite and rendered GUI remain unverified in this shell. The user reports that the desktop GUI shows the router online.
+The prompt-recovery change, GUI layout refinement, and in-GUI QA runner are committed and pushed to `main` at `956514a830f94cdfd8975406add7b21cd43ad0b3`; report auto-save and empty-generation diagnostics are committed and pushed at `5fcf8134b60ea6aec11cb6f3399e929a1c5b6c95`; installer executable permission is preserved. The user-provided earlier-run report is direct live-answer evidence and shows material Qwen failures, but its old schema omits server completion metadata. The latest direct probe to `http://127.0.0.1:9931/v1/models` failed with curl exit 7 (`Could not connect to server`), and GTK returned no default display when probed against the discovered Wayland socket, so the updated suite and rendered GUI remain unverified in this shell. The user reports that the desktop GUI shows the router online.
 
 ## Interpretation
 
