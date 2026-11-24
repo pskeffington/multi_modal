@@ -40,7 +40,9 @@ class RouterWindow(Gtk.ApplicationWindow):
         self._web_research_query = ""
         self.web_research_context = ""
         self._web_approval_prompted: set[str] = set()
-        self.selected_id: str | None = None
+        existing_tasks = store.all()
+        newest_task = max(existing_tasks, key=lambda task: task.get("updated") or task.get("created") or 0, default=None)
+        self.selected_id: str | None = newest_task["id"] if newest_task else None
         self._refreshing = False
         self.rows: dict[str, Gtk.ListBoxRow] = {}
         self.row_labels: dict[str, tuple[Gtk.Label, Gtk.Label]] = {}
@@ -67,42 +69,51 @@ class RouterWindow(Gtk.ApplicationWindow):
         title = Gtk.Label(label="Multi Modal", xalign=0)
         title.add_css_class("title-2")
         header.append(title)
-        new_task_btn = Gtk.Button(label="＋  New task")
+        new_task_btn = Gtk.Button(label="＋  New chat")
         new_task_btn.add_css_class("suggested-action")
         new_task_btn.connect("clicked", self._new_task)
         header.append(new_task_btn)
         self.health = Gtk.Label(label="Checking local router…", xalign=1)
         self.health.set_hexpand(True)
         header.append(self.health)
+
+        app_menu = Gtk.MenuButton(label="⋯")
+        app_menu.set_tooltip_text("Router and quality tools")
+        app_popover = Gtk.Popover()
+        app_actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        app_actions.set_margin_top(8); app_actions.set_margin_bottom(8)
+        app_actions.set_margin_start(8); app_actions.set_margin_end(8)
         self.start_router_btn = Gtk.Button(label="Repair / start router")
         self.start_router_btn.set_tooltip_text(
             "Repair a missing model directory, apply Qwen's memory-adaptive GPU offload settings, then restart the local router"
         )
         self.start_router_btn.connect("clicked", self._start_router)
-        header.append(self.start_router_btn)
+        app_actions.append(self.start_router_btn)
         self.refresh_models_btn = Gtk.Button(label="Refresh models")
         self.refresh_models_btn.connect("clicked", self._start_health_check)
-        header.append(self.refresh_models_btn)
+        app_actions.append(self.refresh_models_btn)
         self.prompt_qa_btn = Gtk.Button(label="Run prompt QA")
         self.prompt_qa_btn.set_tooltip_text("Run the local Qwen prompt suite from this desktop session")
         self.prompt_qa_btn.connect("clicked", self._run_prompt_qa)
-        header.append(self.prompt_qa_btn)
+        app_actions.append(self.prompt_qa_btn)
         self.open_qa_btn = Gtk.Button(label="Open latest QA report")
         self.open_qa_btn.set_tooltip_text(f"Open saved report: {self.latest_prompt_qa_report}")
         self.open_qa_btn.connect("clicked", self._open_latest_prompt_qa)
-        header.append(self.open_qa_btn)
+        app_actions.append(self.open_qa_btn)
         self.browse_qa_btn = Gtk.Button(label="Browse QA reports")
         self.browse_qa_btn.set_tooltip_text("Open the folder containing timestamped prompt QA reports")
         self.browse_qa_btn.connect("clicked", self._browse_prompt_qa_reports)
-        header.append(self.browse_qa_btn)
+        app_actions.append(self.browse_qa_btn)
+        app_popover.set_child(app_actions)
+        app_menu.set_popover(app_popover)
+        header.append(app_menu)
         root.append(header)
 
-        compose = Gtk.Frame(label="Message")
+        compose = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         compose.add_css_class("composer")
-        compose_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        compose_box = compose
         compose_box.set_margin_top(8); compose_box.set_margin_bottom(8)
         compose_box.set_margin_start(8); compose_box.set_margin_end(8)
-        compose.set_child(compose_box)
         self.prompt = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self.prompt.set_size_request(-1, 90)
         self.prompt.get_buffer().set_text("")
@@ -179,7 +190,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.triage_btn = Gtk.Button(label="Triage then route")
         self.triage_btn.connect("clicked", lambda *_args: self._submit(triage=True))
         submit_row.append(self.triage_btn)
-        submit_row.append(Gtk.Label(label="Enter to send · Shift+Enter for a new line · Ask follow-up questions directly", xalign=0))
+        submit_row.append(Gtk.Label(label="Enter to send · Shift+Enter for a new line", xalign=0))
         compose_box.append(submit_row)
 
         pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True)
@@ -194,10 +205,9 @@ class RouterWindow(Gtk.ApplicationWindow):
         pane.set_resize_start_child(False)
         pane.set_shrink_start_child(False)
 
-        self.task_list = self._make_lane(queues, "Tasks")
-        queues.append(Gtk.Label(label="Task status and model are shown under each prompt.", xalign=0, wrap=True))
-
+        self.task_list = self._make_lane(queues, "Recent chats")
         detail_scroll = Gtk.ScrolledWindow()
+        detail_scroll.set_vexpand(True)
         pane.set_end_child(detail_scroll)
         detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
         detail.add_css_class("conversation")
@@ -206,16 +216,21 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.task_title = Gtk.Label(label="Select a task", xalign=0)
         self.task_title.add_css_class("title-2")
         detail.append(self.task_title)
+
+        task_details = Gtk.Expander(label="Task details and actions")
+        task_details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        task_details.set_child(task_details_box)
+        task_details_box.append(Gtk.Label(label="Routing and risk", xalign=0))
         self.meta = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
-        detail.append(self.meta)
+        task_details_box.append(self.meta)
         self.rationale = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
-        detail.append(self.rationale)
+        task_details_box.append(self.rationale)
         self.output = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
-        self.output.set_size_request(-1, 300)
-        out_scroll = Gtk.ScrolledWindow(min_content_height=260)
+        self.output.set_vexpand(True)
+        out_scroll = Gtk.ScrolledWindow(min_content_height=300, vexpand=True)
         out_scroll.set_child(self.output)
-        detail.append(Gtk.Label(label="Conversation", xalign=0))
         detail.append(out_scroll)
+        self.output_scroll = out_scroll
 
         git_expander = Gtk.Expander(label="Git patch review and apply")
         git_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -239,7 +254,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         git_actions.append(self.apply_patch_btn)
         git_box.append(git_actions)
         git_box.append(Gtk.Label(label="Applies only to the selected checkout. No staging, commit, or push.", xalign=0, wrap=True))
-        detail.append(git_expander)
+        task_details_box.append(git_expander)
 
         assignment = Gtk.Box(spacing=8)
         assignment.append(Gtk.Label(label="Assigned model:"))
@@ -251,14 +266,14 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.retry_btn = Gtk.Button(label="Retry blocked task")
         self.retry_btn.connect("clicked", self._retry)
         assignment.append(self.retry_btn)
-        detail.append(assignment)
+        task_details_box.append(assignment)
         recovery = Gtk.Box(spacing=8)
         self.retry_direct_btn = Gtk.Button(label="Run blocked prompt on Qwen · skip triage")
         self.retry_direct_btn.connect("clicked", self._retry_direct)
         recovery.append(self.retry_direct_btn)
-        detail.append(recovery)
+        task_details_box.append(recovery)
         self.assignment_help = Gtk.Label(label="The assignment is advisory until queued; you can change it before execution.", xalign=0, wrap=True)
-        detail.append(self.assignment_help)
+        task_details_box.append(self.assignment_help)
 
         review_expander = Gtk.Expander(label="Optional Codex review and Git patch approval")
         review_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -277,16 +292,22 @@ class RouterWindow(Gtk.ApplicationWindow):
         review_scroll.set_child(self.review)
         review_box.append(Gtk.Label(label="Paste Codex response (APPROVE or CHANGES: …)", xalign=0))
         review_box.append(review_scroll)
-        detail.append(review_expander)
+        task_details_box.append(review_expander)
         self.changes_btn = Gtk.Button(label="Return requested changes to assigned model")
         self.changes_btn.connect("clicked", self._request_changes)
         review_box.append(self.changes_btn)
         self.history = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
-        detail.append(self.history)
+        task_details_box.append(self.history)
+        detail.append(task_details)
 
         root.append(compose)
         self.status = Gtk.Label(label="Ready", xalign=0)
-        root.append(self.status)
+        self.status.add_css_class("dim-label")
+        compose_box.append(self.status)
+        root.remove(compose)
+        root.remove(pane)
+        root.append(pane)
+        root.append(compose)
         for button in (self.copy_btn, self.approve_btn, self.changes_btn, self.validate_patch_btn,
                        self.apply_patch_btn, self.assign_btn, self.retry_btn, self.retry_direct_btn):
             button.set_sensitive(False)
@@ -309,6 +330,7 @@ class RouterWindow(Gtk.ApplicationWindow):
             .conversation { padding: 14px 18px; }
             .composer { background: #2b2b2b; border: 1px solid #454545; border-radius: 12px; padding: 8px; }
             .composer textview { background: #2b2b2b; color: #f2f2f2; }
+            .workspace { background: #212121; }
             .sidebar list row { border-radius: 8px; padding: 8px; }
             .sidebar list row:selected { background: #343434; }
             button { min-height: 34px; }
@@ -787,7 +809,9 @@ class RouterWindow(Gtk.ApplicationWindow):
             while child:
                 current_ids.append(getattr(child, "task_id", ""))
                 child = child.get_next_sibling()
-            ordered_ids = [task["id"] for task in tasks]
+            ordered_ids = [task["id"] for task in sorted(
+                tasks, key=lambda task: task.get("created") or 0, reverse=True
+            )]
             if current_ids != ordered_ids:
                 child = self.task_list.get_first_child()
                 while child:
@@ -837,6 +861,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         if task["state"] == "blocked" and task["error"]:
             turns.append(f"Router error:\n{task['error']}")
         self.output.get_buffer().set_text("\n\n".join(turns) or "No model output yet.")
+        GLib.idle_add(self._scroll_output_to_latest)
         self.git_task_info.set_text(
             f"Checkout: {task['git_repo'] or 'none'}\nContext files: {task['git_context_paths'] or 'none'}\n"
             f"Patch applied: {'yes · ' + task['git_patch_sha256'][:12] if task['git_patch_sha256'] else 'no'}")
@@ -916,6 +941,14 @@ class RouterWindow(Gtk.ApplicationWindow):
                 dialog.present()
         events = self.store.events(task["id"])
         self.history.set_text("History:\n" + "\n".join(f"{e['state']} — {e['detail']}" for e in events[-8:]))
+
+    def _scroll_output_to_latest(self) -> bool:
+        end = self.output.get_buffer().get_end_iter()
+        self.output.scroll_to_iter(end, 0.0, True, 0.0, 1.0)
+        adjustment = self.output_scroll.get_vadjustment()
+        bottom = adjustment.get_upper() - adjustment.get_page_size()
+        adjustment.set_value(max(adjustment.get_lower(), bottom))
+        return False
 
     def _assign(self, *_args) -> None:
         task = self.store.get(self.selected_id or "")
