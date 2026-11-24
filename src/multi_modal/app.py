@@ -76,7 +76,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         header.append(self.health)
         self.start_router_btn = Gtk.Button(label="Repair / start router")
         self.start_router_btn.set_tooltip_text(
-            "Repair a missing model-directory setting if needed, then start the configured local router"
+            "Repair a missing model directory, apply Qwen's memory-adaptive GPU offload settings, then restart the local router"
         )
         self.start_router_btn.connect("clicked", self._start_router)
         header.append(self.start_router_btn)
@@ -349,13 +349,14 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.router_starting = True
         self.start_router_btn.set_sensitive(False)
         self.start_router_btn.set_label("Starting router…")
-        self.status.set_text("Checking the local model directory, then starting the llama-router user service…")
+        self.status.set_text("Repairing the model directory and Qwen GPU offload settings, then restarting llama-router…")
         threading.Thread(target=self._start_router_worker, daemon=True).start()
 
     def _start_router_worker(self) -> None:
         try:
             catalog, started = start_user_router()
-            detail = "Local router started and ready." if started else "Local router is already online."
+            detail = ("Local router started and ready. Qwen GPU offload is set to automatic fit."
+                      if started else "Local router is already online.")
             GLib.idle_add(self._router_started, catalog, detail)
         except RouterControlError as exc:
             GLib.idle_add(self._router_start_failed, str(exc))

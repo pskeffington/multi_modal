@@ -4,7 +4,7 @@
 
 - Run `scripts/launch.sh`, or install `scripts/install-user.sh` and open **Multi Modal Task Router** from the desktop menu.
 - The router must be available at `http://127.0.0.1:9931`. The UI shows model IDs advertised by its `/v1/models` or `/models` endpoint.
-- If it is offline, press **Start local router** in the GUI. This starts the configured `llama-router.service` through the active desktop user's systemd session, then waits for its model catalog. If startup fails, inspect `journalctl --user -u llama-router.service`; no root access is required.
+- If it is offline, press **Repair / start router** in the GUI. This repairs a missing model-store path to the existing user model directory, sets the Qwen preset to `n-gpu-layers=auto` and `fit=on` while preserving previous values as comments, restarts the configured `llama-router.service` through the active desktop user's systemd session, then waits for its model catalog. It changes only those local settings; it does not change GGUF model weights or download files. If startup fails, inspect `journalctl --user -u llama-router.service`; no root access is required.
 - Optional environment overrides adapt the deployment without code edits: `MULTI_MODAL_ROUTER_URL` (must remain loopback HTTP), `MULTI_MODAL_QWEN_MODEL`, `MULTI_MODAL_GLM_MODEL`, `MULTI_MODAL_MAX_TOKENS` (default 4,096 total generation tokens), `MULTI_MODAL_THINKING_BUDGET_TOKENS` (default 1,024 private-reasoning tokens), and `MULTI_MODAL_CONTEXT_TOKENS` (default 8,192 context tokens; must match the loaded server model).
 - App data lives under `$XDG_DATA_HOME/multi_modal` or `~/.local/share/multi_modal`, with a private SQLite task journal.
 
@@ -13,7 +13,7 @@
 - Run `make install-gpu-optimizer` to install `multi-modal-gpu-optimize`, an application-menu entry, and a desktop icon. The icon opens a terminal so benchmark progress and GPU access blockers remain visible.
 - Set `MULTI_MODAL_GPU_MODEL` to a local Qwen `.gguf` file, or launch `multi-modal-gpu-optimize --model /path/to/model.gguf`. Set `MULTI_MODAL_LLAMA_BENCH` if `llama-bench` is not on `PATH` or under `~/.local/lib/llama.cpp`.
 - The optimizer requires llama.cpp to enumerate a hardware GPU and passes that exact device with 99 GPU layers and host offload disabled. It rejects CPU and software-renderer devices. It saves per-run measurements and a best tested configuration under `$XDG_STATE_HOME/multi_modal/gpu-optimizer`; no task prompts, outputs, or repo context are read or uploaded.
-- It benchmarks prompt and generation throughput for context/batch combinations and saves a recommendation only. Apply settings to the model server manually after reviewing the report. No weights are fine-tuned and no server configuration is changed automatically.
+- It benchmarks prompt and generation throughput for context/batch combinations and saves a recommendation only. The router repair button applies a memory-adaptive Qwen GPU offload profile; use benchmark reports to decide whether to adjust context or batch settings. No weights are fine-tuned.
 
 ## Task flow
 

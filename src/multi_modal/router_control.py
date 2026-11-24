@@ -9,10 +9,11 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .client import LocalClient, LocalModelError
+from .client import QWEN, LocalClient, LocalModelError
 
 SERVICE = "llama-router.service"
 SERVER_ENV = Path.home() / ".config/llama.cpp/server.env"
+MODELS_PRESET = Path.home() / ".config/llama.cpp/models.ini"
 FALLBACK_MODELS_DIR = Path.home() / ".local/share/llama.cpp/models"
 MODELS_DIR_KEY = "LLAMA_MODELS_DIR"
 
@@ -90,6 +91,73 @@ def _repair_missing_models_dir() -> bool:
     return True
 
 
+def _repair_qwen_gpu_fit() -> bool:
+    """Set Qwen to llama.cpp's memory-adaptive GPU layer offload profile."""
+    try:
+        if MODELS_PRESET.is_symlink():
+            raise RouterControlError(f"Router repair will not modify symlinked presets: {MODELS_PRESET}")
+        original = MODELS_PRESET.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RouterControlError(f"Could not inspect llama.cpp model presets at {MODELS_PRESET}: {exc}") from exc
+
+    lines = original.splitlines(keepends=True)
+    section_header = f"[{QWEN}]"
+    section_start = next((i for i, line in enumerate(lines) if line.strip() == section_header), None)
+    if section_start is None:
+        raise RouterControlError(f"Qwen preset [{QWEN}] is missing from {MODELS_PRESET}; GPU settings were not changed.")
+    section_end = next((i for i in range(section_start + 1, len(lines))
+                        if lines[i].lstrip().startswith("[")), len(lines))
+
+    desired = {"n-gpu-layers": "auto", "fit": "on"}
+    found: set[str] = set()
+    changed_lines: list[str] = []
+    changed = False
+    for line in lines[section_start + 1:section_end]:
+        stripped = line.strip()
+        key, separator, value = stripped.partition("=")
+        key = key.strip()
+        if separator and key in desired:
+            found.add(key)
+            new_value = desired[key]
+            if value.strip().strip('"') != new_value:
+                changed_lines.append(f"# Multi Modal repair replaced {key}={value.strip()}\n")
+                changed_lines.append(f"{key} = {new_value}\n")
+                changed = True
+                continue
+        changed_lines.append(line)
+    if changed_lines and not changed_lines[-1].endswith(("\n", "\r")):
+        changed_lines[-1] += "\n"
+    for key, value in desired.items():
+        if key not in found:
+            changed_lines.append(f"{key} = {value}\n")
+            changed = True
+
+    if not changed:
+        return False
+    updated = "".join(lines[:section_start + 1] + changed_lines + lines[section_end:])
+    try:
+        mode = MODELS_PRESET.stat().st_mode & 0o777
+        temp_path: Path | None = None
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=MODELS_PRESET.parent,
+            prefix=f".{MODELS_PRESET.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temp_path = Path(stream.name)
+            stream.write(updated)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, MODELS_PRESET)
+    except OSError as exc:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise RouterControlError(f"Could not repair Qwen GPU offload settings: {exc}") from exc
+    return True
+
+
 def start_user_router(*, ready_timeout: float = 30.0,
                       client_factory: Callable[[], LocalClient] = LocalClient,
                       run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> tuple[list[dict[str, str]], bool]:
@@ -107,6 +175,7 @@ def start_user_router(*, ready_timeout: float = 30.0,
         pass
 
     _repair_missing_models_dir()
+    _repair_qwen_gpu_fit()
 
     try:
         result = run(["systemctl", "--user", "restart", SERVICE],
