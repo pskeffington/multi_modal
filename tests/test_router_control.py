@@ -27,8 +27,8 @@ class RouterControlTests(unittest.TestCase):
         catalog, started = start_user_router(client_factory=lambda: client, run=run)
         self.assertTrue(started)
         self.assertEqual(catalog[0]["id"], "qwen")
-        run.assert_called_once_with(["systemctl", "--user", "start", SERVICE],
-                                    capture_output=True, text=True, timeout=12, check=False)
+        run.assert_called_once_with(["systemctl", "--user", "restart", SERVICE],
+                                    capture_output=True, text=True, timeout=30, check=False)
 
     def test_reports_missing_desktop_session_bus_without_shell_fallback(self) -> None:
         client = Mock()
@@ -36,7 +36,7 @@ class RouterControlTests(unittest.TestCase):
         run = Mock(side_effect=PermissionError("user bus unavailable"))
         with self.assertRaisesRegex(RouterControlError, "desktop session"):
             start_user_router(client_factory=lambda: client, run=run, ready_timeout=0)
-        self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "start", SERVICE])
+        self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "restart", SERVICE])
 
     def test_systemd_service_error_is_reported(self) -> None:
         client = Mock()

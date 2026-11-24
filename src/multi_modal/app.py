@@ -74,7 +74,10 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.health = Gtk.Label(label="Checking local router…", xalign=1)
         self.health.set_hexpand(True)
         header.append(self.health)
-        self.start_router_btn = Gtk.Button(label="Start local router")
+        self.start_router_btn = Gtk.Button(label="Repair / start router")
+        self.start_router_btn.set_tooltip_text(
+            "Repair a missing model-directory setting if needed, then start the configured local router"
+        )
         self.start_router_btn.connect("clicked", self._start_router)
         header.append(self.start_router_btn)
         self.refresh_models_btn = Gtk.Button(label="Refresh models")
@@ -346,7 +349,7 @@ class RouterWindow(Gtk.ApplicationWindow):
         self.router_starting = True
         self.start_router_btn.set_sensitive(False)
         self.start_router_btn.set_label("Starting router…")
-        self.status.set_text("Starting the configured llama-router user service from this desktop session…")
+        self.status.set_text("Checking the local model directory, then starting the llama-router user service…")
         threading.Thread(target=self._start_router_worker, daemon=True).start()
 
     def _start_router_worker(self) -> None:
@@ -360,7 +363,7 @@ class RouterWindow(Gtk.ApplicationWindow):
     def _router_started(self, catalog: list[dict[str, str]], detail: str) -> bool:
         self.router_starting = False
         self.start_router_btn.set_sensitive(True)
-        self.start_router_btn.set_label("Start local router")
+        self.start_router_btn.set_label("Repair / start router")
         models = [item["id"] for item in catalog]
         states = {item["id"]: item["status"] for item in catalog}
         qwen_id = resolve_model_id(QWEN, models)
@@ -374,9 +377,12 @@ class RouterWindow(Gtk.ApplicationWindow):
     def _router_start_failed(self, error: str) -> bool:
         self.router_starting = False
         self.start_router_btn.set_sensitive(True)
-        self.start_router_btn.set_label("Start local router")
+        self.start_router_btn.set_label("Repair / start router")
         self.health.set_text("Router unavailable · " + error)
-        self.status.set_text("Router startup failed. Check the desktop session's user-service logs.")
+        self.status.set_text(
+            "Router startup failed: " + error
+            + " — check `systemctl --user status llama-router.service` and its configured model directory."
+        )
         return False
 
     def _periodic_health_check(self) -> bool:
