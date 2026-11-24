@@ -15,6 +15,31 @@ DEFAULT_MAX_TOKENS = int(os.environ.get("MULTI_MODAL_MAX_TOKENS", "4096"))
 DEFAULT_THINKING_BUDGET_TOKENS = int(os.environ.get("MULTI_MODAL_THINKING_BUDGET_TOKENS", "1024"))
 DEFAULT_CONTEXT_TOKENS = int(os.environ.get("MULTI_MODAL_CONTEXT_TOKENS", "8192"))
 CONTEXT_RESERVE_TOKENS = 128
+QWEN_GENERAL_SAMPLING = {
+    "temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5,
+}
+QWEN_CODING_SAMPLING = {
+    "temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 0.0,
+}
+QWEN_CODING_SAMPLING_PROFILE = "qwen-coding"
+
+
+def resolve_sampling(model: str, configured_model: str = QWEN,
+                     profile: str = "auto") -> tuple[str, dict]:
+    """Select a documented Qwen sampling profile or preserve other models' defaults."""
+    if profile == "auto":
+        is_configured_qwen = (model.casefold() == configured_model.casefold()
+                              or model.casefold().startswith(configured_model.casefold() + ":"))
+        selected = "qwen-general" if is_configured_qwen else "server-default"
+    else:
+        selected = profile
+    if selected == "qwen-general":
+        return selected, dict(QWEN_GENERAL_SAMPLING)
+    if selected == QWEN_CODING_SAMPLING_PROFILE:
+        return selected, dict(QWEN_CODING_SAMPLING)
+    if selected == "server-default":
+        return selected, {"temperature": 0.1}
+    raise ValueError(f"Unsupported sampling profile: {profile}")
 
 
 class LocalModelError(RuntimeError):
@@ -140,7 +165,8 @@ class LocalClient:
 
     def chat(self, model: str, messages: list[dict], timeout: float,
              response_format: dict | None = None, max_tokens: int = DEFAULT_MAX_TOKENS,
-             thinking_budget_tokens: int = DEFAULT_THINKING_BUDGET_TOKENS) -> str:
+             thinking_budget_tokens: int = DEFAULT_THINKING_BUDGET_TOKENS,
+             sampling_profile: str = "auto") -> str:
         self.last_prompt_stats = {}
         if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens < 1:
             raise ValueError("max_tokens must be a positive integer")
@@ -160,14 +186,18 @@ class LocalClient:
         fitted_messages, token_stats = fit_messages_to_budget(
             messages, prompt_budget, lambda candidate: self.count_chat_tokens(resolved, candidate)
         )
+        effective_profile, sampling = resolve_sampling(resolved, QWEN, sampling_profile)
         self.last_prompt_stats = {**token_stats, "context_tokens": self.context_tokens,
                                   "max_tokens": max_tokens,
                                   "thinking_budget_tokens": thinking_budget_tokens,
+                                  "sampling_profile": effective_profile,
+                                  "sampling": sampling,
                                   "counter": "llama.cpp exact chat-token endpoint"}
         payload = {
-            "model": resolved, "messages": fitted_messages, "temperature": 0.1,
+            "model": resolved, "messages": fitted_messages,
             "stream": False, "max_tokens": max_tokens,
             "thinking_budget_tokens": thinking_budget_tokens,
+            **sampling,
         }
         if response_format is not None:
             payload["response_format"] = response_format

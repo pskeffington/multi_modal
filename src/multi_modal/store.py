@@ -12,7 +12,7 @@ from typing import Any
 
 STATES = {
     "triage_pending", "needs_attention", "queued", "running",
-    "review_pending", "revision_queued", "done", "blocked", "cancelled",
+    "web_search_pending", "search_resume_queued", "review_pending", "revision_queued", "done", "blocked", "cancelled",
 }
 
 
@@ -123,7 +123,7 @@ class TaskStore:
 
     def all(self) -> list[dict[str, Any]]:
         with self.lock:
-            return [dict(row) for row in self.db.execute("SELECT * FROM tasks ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'triage_pending' THEN 1 WHEN 'queued' THEN 2 WHEN 'revision_queued' THEN 3 WHEN 'review_pending' THEN 4 WHEN 'needs_attention' THEN 5 ELSE 6 END, priority DESC, created")]
+            return [dict(row) for row in self.db.execute("SELECT * FROM tasks ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'triage_pending' THEN 1 WHEN 'queued' THEN 2 WHEN 'revision_queued' THEN 3 WHEN 'search_resume_queued' THEN 4 WHEN 'web_search_pending' THEN 5 WHEN 'review_pending' THEN 6 WHEN 'needs_attention' THEN 7 ELSE 8 END, priority DESC, created")]
 
     def events(self, task_id: str) -> list[dict[str, Any]]:
         with self.lock:
@@ -189,12 +189,12 @@ class TaskStore:
             return False
         with self.lock:
             task = self.db.execute("SELECT state FROM tasks WHERE id=?", (task_id,)).fetchone()
-            if not task or task["state"] != "done":
+            if not task or task["state"] not in {"review_pending", "done"}:
                 return False
             self.ensure_conversation(task_id)
             self.db.execute("INSERT INTO messages(task_id,role,source,content,created) VALUES(?,?,?,?,?)",
                             (task_id, "user", "user", prompt, time.time()))
-            self._write_update(task_id, "queued", "User continued the approved conversation",
+            self._write_update(task_id, "queued", "User asked a follow-up question in the conversation",
                                {"review_response": "", "error": ""})
             return True
 
@@ -209,6 +209,25 @@ class TaskStore:
         return self.update_if_state(task_id, {"blocked"}, "queued", reason,
                                     assigned_model=model, suggested_model=model,
                                     routing_reason=reason, error="", review_response="")
+
+    def web_search_decision(self, task_id: str, query: str, *, approved: bool) -> bool:
+        """Record an explicit decision for the exact paused web-search query."""
+        with self.lock:
+            task = self.db.execute("SELECT state FROM tasks WHERE id=?", (task_id,)).fetchone()
+            latest = self.db.execute(
+                "SELECT content FROM messages WHERE task_id=? AND role='assistant' AND source='tool' ORDER BY id DESC LIMIT 1",
+                (task_id,)).fetchone()
+            if not task or task["state"] != "web_search_pending" or not latest:
+                return False
+            normalized = " ".join(query.split())
+            if latest["content"] != "Web search requested: " + normalized:
+                return False
+            verb = "approved" if approved else "declined"
+            self.db.execute("INSERT INTO messages(task_id,role,source,content,created) VALUES(?,?,?,?,?)",
+                            (task_id, "user", "tool_approval",
+                             f"User {verb} web search query: {normalized}", time.time()))
+            self._write_update(task_id, "search_resume_queued", f"User {verb} the web search; queued model continuation", {})
+            return True
 
     def update(self, task_id: str, state: str, detail: str, **fields: Any) -> None:
         if state not in STATES:
@@ -231,7 +250,7 @@ class TaskStore:
         """Atomically claim queued work and return its latest model assignment."""
         with self.lock:
             row = self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-            if not row or row["state"] not in {"queued", "revision_queued"}:
+            if not row or row["state"] not in {"queued", "revision_queued", "search_resume_queued"}:
                 return None
             task = dict(row)
             model = task["assigned_model"] or task["suggested_model"] or default_model

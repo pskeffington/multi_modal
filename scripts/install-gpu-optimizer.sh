@@ -12,7 +12,9 @@ escape_desktop_arg() {
 	printf '%s' "$1" | sed 's/[\\`"$]/\\&/g'
 }
 
-mkdir -p "$BIN_DIR" "$DATA_DIR/applications"
+ICON_DIR="$DATA_DIR/icons/hicolor/scalable/apps"
+mkdir -p "$BIN_DIR" "$DATA_DIR/applications" "$ICON_DIR"
+cp "$APP_DIR/data/icons/hicolor/scalable/apps/multi-modal-gpu-optimizer.svg" "$ICON_DIR/"
 APP_SCRIPT_ESC=$(escape_desktop_arg "$APP_SCRIPT")
 cat > "$EXECUTABLE" <<EOF
 #!/bin/sh
@@ -30,7 +32,7 @@ Name=Multi Modal GPU Optimizer
 Comment=Benchmark GPU-only local model settings with llama.cpp
 TryExec="$EXEC_ESC"
 Exec="$EXEC_ESC"
-Icon=applications-science
+Icon=multi-modal-gpu-optimizer
 Terminal=true
 Categories=Utility;
 StartupNotify=false

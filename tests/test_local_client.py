@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from multi_modal.client import (QWEN, LocalClient, LocalModelError,
-                                fit_messages_to_budget)
+                                fit_messages_to_budget, resolve_sampling)
 
 
 class LocalClientHttpTests(unittest.TestCase):
@@ -123,6 +123,24 @@ class LocalClientHttpTests(unittest.TestCase):
             LocalClient("http://0.0.0.0:9931")
         with self.assertRaises(ValueError):
             LocalClient("https://127.0.0.1:9931")
+
+    def test_sampling_profiles_follow_configured_qwen_and_preserve_glm_default(self) -> None:
+        profile, sampling = resolve_sampling(QWEN, QWEN)
+        self.assertEqual(profile, "qwen-general")
+        self.assertEqual(sampling, {"temperature": 1.0, "top_p": 0.95,
+                                    "top_k": 20, "presence_penalty": 1.5})
+        profile, sampling = resolve_sampling(QWEN + ":Q4_K_M", QWEN)
+        self.assertEqual(profile, "qwen-general")
+        self.assertEqual(sampling["top_k"], 20)
+        profile, sampling = resolve_sampling("local/GLM", QWEN)
+        self.assertEqual(profile, "server-default")
+        self.assertEqual(sampling, {"temperature": 0.1})
+
+    def test_explicit_qwen_coding_sampling_profile(self) -> None:
+        profile, sampling = resolve_sampling(QWEN, QWEN, "qwen-coding")
+        self.assertEqual(profile, "qwen-coding")
+        self.assertEqual(sampling, {"temperature": 0.6, "top_p": 0.95,
+                                    "top_k": 20, "presence_penalty": 0.0})
 
 
 if __name__ == "__main__":
